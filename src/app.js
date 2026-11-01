@@ -1092,7 +1092,9 @@ async function start() {
     showError(error);
   }
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js").catch(showError);
+    navigator.serviceWorker.register("./sw.js", { updateViaCache: "none" })
+      .then((registration) => registration.update())
+      .catch(showError);
   }
 }
 
