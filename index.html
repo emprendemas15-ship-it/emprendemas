@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#102b46">
+    <meta name="description" content="Emprende +: tu negocio bajo control.">
+    <title>Emprende + | Tu negocio bajo control</title>
+    <link rel="manifest" href="./manifest.json">
+    <link rel="icon" href="./assets/icon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" id="sidebar">
+        <a class="brand" href="./" aria-label="Emprende + inicio">
+          <img class="brand-logo" src="./assets/emprende-plus-logo.jpeg" alt="Emprende +, tu negocio bajo control">
+        </a>
+        <nav class="main-nav" id="main-nav" aria-label="Navegación principal"></nav>
+        <div class="sidebar-footer">
+          <span class="offline-indicator"><i></i> Aplicación PWA</span>
+          <small>La aplicación conserva el acceso a su interfaz sin conexión. Para consultar y guardar datos se requiere conexión a Supabase.</small>
+        </div>
+      </aside>
+      <main class="main-area">
+        <header class="topbar">
+          <button class="icon-button mobile-menu" id="menu-toggle" type="button" aria-label="Abrir menú" aria-expanded="false">☰</button>
+          <div class="topbar-title">
+            <span class="eyebrow" id="workspace-label">EMPRENDE +</span>
+            <strong id="business-name">Mi negocio</strong>
+          </div>
+          <div class="topbar-actions">
+            <button class="button button-secondary workspace-switch" id="workspace-switch" type="button" hidden>Cambiar entorno</button>
+            <span class="local-badge" id="session-badge"><i></i> Sesión autenticada</span>
+          </div>
+        </header>
+        <section class="page-content" id="page-content" aria-live="polite"></section>
+      </main>
+    </div>
+    <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
+    <div class="modal-root" id="modal-root"></div>
+    <script type="module" src="./src/app.js"></script>
+  </body>
+</html>

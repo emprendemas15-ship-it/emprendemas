@@ -1,0 +1,20 @@
+{
+  "name": "emprende-plus",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Aplicación web progresiva de gestión empresarial para Emprende +",
+  "scripts": {
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.57.4"
+  },
+  "devDependencies": {
+    "vite": "^7.1.7"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
