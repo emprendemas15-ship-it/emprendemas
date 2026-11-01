@@ -185,12 +185,18 @@ export async function getPlatformRecords(storeName) {
       .neq("role", "unassigned")
       .order("created_at", { ascending: false });
     if (error) throw databaseError(error, "No fue posible consultar los perfiles empresariales.");
+    const { data: pendingRequests, error: requestsError } = await supabase.from("platform_requests")
+      .select("auth_user_id")
+      .eq("status", "pending")
+      .not("auth_user_id", "is", null);
+    if (requestsError) throw databaseError(requestsError, "No fue posible comprobar las solicitudes pendientes.");
     const { data: companies, error: companiesError } = await supabase.from("companies")
       .select("id,name,status");
     if (companiesError) throw databaseError(companiesError, "No fue posible consultar las empresas asociadas.");
+    const pendingUserIds = new Set(pendingRequests.map((request) => request.auth_user_id));
     const companyNames = new Map(companies.map((company) => [company.id, company.name]));
     const companyStatuses = new Map(companies.map((company) => [company.id, company.status]));
-    return data.filter((profile) => profile.role !== "platform_admin").map((profile) => ({
+    return data.filter((profile) => profile.role !== "platform_admin" && !pendingUserIds.has(profile.id)).map((profile) => ({
       id: profile.id,
       name: profile.full_name,
       email: profile.email,
@@ -208,11 +214,12 @@ export async function getPlatformRecords(storeName) {
 
   if (storeName === "platformRequests") {
     const { data, error } = await supabase.from("platform_requests")
-      .select("id,company_name,activity,owner_name,contact_email,requested_at,status,created_at,updated_at")
+      .select("id,auth_user_id,company_name,activity,owner_name,contact_email,requested_at,status,created_at,updated_at")
       .order("created_at", { ascending: false });
     if (error) throw databaseError(error, "No fue posible consultar las solicitudes.");
     return data.map((request) => ({
       id: request.id,
+      authUserId: request.auth_user_id,
       companyName: request.company_name,
       activity: request.activity,
       ownerName: request.owner_name,
@@ -247,7 +254,7 @@ export async function savePlatformRecord(storeName, values, existingId) {
 
   if (storeName === "platformUsers") {
     if (!existingId) throw new Error("Las cuentas empresariales se crean mediante un flujo autenticado de invitación.");
-    const roles = { Administrador: "administrator", Empleado: "employee" };
+    const roles = { Propietario: "owner", Administrador: "administrator", Empleado: "employee" };
     if (!Object.hasOwn(roles, values.role)) throw new Error("Selecciona un perfil empresarial válido.");
     const role = roles[values.role];
     const { error } = await supabase.rpc("admin_update_company_user", {
@@ -259,33 +266,18 @@ export async function savePlatformRecord(storeName, values, existingId) {
     return { id: existingId };
   }
 
-  if (storeName === "platformRequests") {
-    const row = {
-      company_name: values.companyName,
-      activity: values.activity,
-      owner_name: values.ownerName,
-      contact_email: values.contactEmail,
-      requested_at: values.requestedAt,
-      status: values.status === "Aprobada" ? "approved"
-        : values.status === "Rechazada" ? "rejected" : "pending"
-    };
-    const query = existingId
-      ? supabase.from("platform_requests").update(row).eq("id", existingId)
-      : supabase.from("platform_requests").insert(row);
-    const { data, error } = await query.select("id").single();
-    if (error) throw databaseError(error, "No fue posible guardar la solicitud.");
-    return { id: data.id };
-  }
-
   throw new Error("Los usuarios y roles se administran mediante las cuentas autenticadas, no como registros manuales.");
 }
 
-export async function deletePlatformRecord(storeName, id) {
-  if (storeName !== "platformRequests") {
-    throw new Error("No se elimina una empresa o un perfil desde esta vista. Desactiva la empresa o administra la cuenta autenticada.");
+export async function reviewPlatformRequest(id, decision) {
+  if (!["approved", "rejected"].includes(decision)) {
+    throw new Error("La decisión de solicitud no es válida.");
   }
-  const { error } = await getSupabase().from("platform_requests").delete().eq("id", id);
-  if (error) throw databaseError(error, "No fue posible eliminar la solicitud.");
+  const { error } = await getSupabase().rpc("admin_decide_registration", {
+    p_request_id: id,
+    p_decision: decision
+  });
+  if (error) throw databaseError(error, "No fue posible revisar la solicitud.");
 }
 
 export async function getPlatformSetting(key) {

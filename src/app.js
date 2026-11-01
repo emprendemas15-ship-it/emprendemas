@@ -4,8 +4,8 @@ import {
   platformCompanyFields, platformModules, platformRequestFields, platformUserFields
 } from "./platform-modules.js";
 import {
-  deletePlatformRecord, deleteRecord, getPlatformRecords, getPlatformSetting, getRecords, getSetting,
-  savePlatformRecord, savePlatformSetting, saveRecord, saveSetting, setCloudIdentity
+  deleteRecord, getPlatformRecords, getPlatformSetting, getRecords, getSetting,
+  reviewPlatformRequest, savePlatformRecord, savePlatformSetting, saveRecord, saveSetting, setCloudIdentity
 } from "./cloud-data.js";
 import { downloadBackup, getBackups, restoreBackupFile } from "./backup.js";
 import { isBackendConfigured, loadIdentity, registerBusiness, signIn, signOut } from "./supabase.js";
@@ -222,18 +222,20 @@ async function handleAuthSubmit(event, form, submit) {
       if (result.session) await signOut();
       authView = "login";
       renderAuthScreen();
-      if (!result.session) {
-        showToast("Cuenta creada. Confirma tu correo para activar el ingreso.");
-        return;
-      }
-      showToast("Empresa registrada. Inicia sesión para continuar.");
+      showToast(result.session
+        ? "Solicitud enviada. Podrás ingresar cuando el administrador apruebe tu empresa."
+        : "Solicitud creada. Confirma tu correo si Supabase te lo solicita; después espera la aprobación de tu empresa.");
       return;
     } else {
       await signIn(values.email.trim(), values.password);
     }
     await activateIdentity();
   } catch (error) {
-    showError(error);
+    if (error?.code === "email_not_confirmed") {
+      showError(new Error("Este correo aún no está confirmado. Que la empresa figure activa no confirma el email; abre el enlace de verificación enviado a ese correo."));
+    } else {
+      showError(error);
+    }
     submit.disabled = false;
   }
 }
@@ -389,11 +391,14 @@ async function renderPlatformDirectory(module) {
     : entity === "users"
       ? "Perfiles empresariales autenticados y su estado de acceso."
       : "Solicitudes administrativas de registro.";
-  const action = entity === "requests" && module.id === "platform-requests"
-    ? addButton("+ Registrar solicitud", "button-primary", () => openPlatformForm(entity))
-    : null;
-  pageHeading(title, description, action);
+  pageHeading(title, description);
   platformNotice();
+
+  if (entity === "requests") {
+    const requestNotice = element("div", "notice");
+    requestNotice.textContent = "Las nuevas cuentas aparecen aquí como pendientes. Aprobar habilita la empresa y el acceso de su propietario; rechazar mantiene la cuenta bloqueada.";
+    page.append(requestNotice);
+  }
 
   if (entity === "users" && !module.status) {
     const note = element("div", "notice");
@@ -447,7 +452,9 @@ function renderPlatformTable(container, rows, entity, withActions, fields, compa
     : entity === "users"
       ? ["name", "email", "companyId", "role", "status"]
       : ["companyName", "activity", "ownerName", "requestedAt", "status"];
-  const hasActions = withActions && (entity !== "users" || rows.some((record) => record.role !== "Propietario"));
+  const hasActions = withActions && (entity === "companies" || entity === "users"
+    ? rows.length > 0
+    : entity === "requests" && rows.some((record) => record.authUserId && record.status === "Pendiente"));
   const table = element("table", "data-table");
   const head = element("thead");
   const headRow = element("tr");
@@ -473,18 +480,26 @@ function renderPlatformTable(container, rows, entity, withActions, fields, compa
       }
       row.append(cell);
     }
-    if (hasActions && (entity === "companies" || entity === "users" || entity === "requests")) {
+    if (hasActions) {
       const actions = element("td");
       const group = element("div", "table-actions");
-      const edit = element("button", "", "Editar");
-      edit.type = "button";
-      edit.addEventListener("click", () => openPlatformForm(entity, record));
-      group.append(edit);
       if (entity === "requests") {
-        const remove = element("button", "", "Eliminar");
-        remove.type = "button";
-        remove.addEventListener("click", () => removePlatformRecord(entity, record.id));
-        group.append(remove);
+        if (record.authUserId && record.status === "Pendiente") {
+          const approve = element("button", "", "Aprobar");
+          approve.type = "button";
+          approve.addEventListener("click", () => decideRegistration(record, "approved"));
+          const reject = element("button", "", "Rechazar");
+          reject.type = "button";
+          reject.addEventListener("click", () => decideRegistration(record, "rejected"));
+          group.append(approve, reject);
+        } else {
+          group.append(element("span", "permission-note", record.authUserId ? "Revisada" : "Registro histórico"));
+        }
+      } else {
+        const edit = element("button", "", entity === "users" ? "Gestionar acceso" : "Editar");
+        edit.type = "button";
+        edit.addEventListener("click", () => openPlatformForm(entity, record));
+        group.append(edit);
       }
       actions.append(group);
       row.append(actions);
@@ -498,10 +513,10 @@ function renderPlatformTable(container, rows, entity, withActions, fields, compa
 async function renderPlatformAccess() {
   const users = await getPlatformRecords("platformUsers");
   const companies = await getPlatformRecords("platformCompanies");
-  pageHeading("Control de accesos", "Revisa perfiles empresariales registrados, sin crear sesiones de usuario.");
+  pageHeading("Control de accesos", "Activa o bloquea cuentas y asigna el perfil de acceso correspondiente.");
   platformNotice();
   const notice = element("div", "notice warning");
-  notice.textContent = "El administrador de plataforma puede consultar y desactivar perfiles empresariales, pero no puede leer sus datos operativos.";
+  notice.textContent = "Puedes activar o bloquear cada perfil y asignar Administrador o Empleado. El perfil Propietario no se puede cambiar; solo se puede activar o bloquear. Esto no da acceso a los datos operativos de la empresa desde el panel de plataforma.";
   page.append(notice);
   const panel = element("section", "panel");
   const header = element("div", "panel-header");
@@ -770,16 +785,16 @@ async function openPlatformForm(entity, record = null) {
     showToast("Este registro se crea mediante el alta empresarial autenticada.", true);
     return;
   }
-  const storeName = entity === "companies" ? "platformCompanies"
-    : entity === "users" ? "platformUsers" : "platformRequests";
+  const storeName = entity === "companies" ? "platformCompanies" : "platformUsers";
   const fields = entity === "companies"
     ? platformCompanyFields.filter((field) => field.name !== "registeredAt")
     : entity === "users"
-      ? platformUserFields.filter((field) => ["role", "status"].includes(field.name))
+      ? platformUserFields.filter((field) => field.name === "status"
+        || (field.name === "role" && record?.role !== "Propietario"))
         .map((field) => field.name === "role"
           ? { ...field, options: ["Administrador", "Empleado"] }
           : field)
-      : platformRequestFields;
+      : [];
   const companies = entity === "users" ? await getPlatformRecords("platformCompanies") : [];
   if (entity === "users" && !companies.length) {
     showToast("Registra primero una empresa para poder asociar usuarios.", true);
@@ -820,7 +835,9 @@ async function openPlatformForm(entity, record = null) {
   }
   form.append(grid);
   if (entity === "users") {
-    const hint = element("p", "permission-note", "El rol y el estado actualizan los permisos de esta cuenta autenticada. Los perfiles de propietario se administran desde el estado de su empresa.");
+    const hint = element("p", "permission-note", record.role === "Propietario"
+      ? "El propietario puede activarse o bloquearse. Su perfil no se puede cambiar desde el control de accesos."
+      : "El perfil determina el nivel de acceso de esta cuenta: Administrador o Empleado. El estado permite bloquearla o reactivarla.");
     form.append(hint);
   }
   const actions = element("div", "form-actions");
@@ -836,10 +853,10 @@ async function openPlatformForm(entity, record = null) {
     try {
       const formValues = new FormData(form);
       const values = Object.fromEntries(fields.map((field) => [field.name, formValues.get(field.name) || ""]));
+      if (entity === "users" && !values.role) values.role = record.role;
       await savePlatformRecord(storeName, values, record?.id);
       modalRoot.replaceChildren();
-      showToast(entity === "users" ? "Acceso del usuario actualizado." : entity === "requests"
-        ? "Solicitud guardada." : "Datos de empresa actualizados.");
+      showToast(entity === "users" ? "Acceso del usuario actualizado." : "Datos de empresa actualizados.");
       await renderPage();
     } catch (error) {
       showError(error);
@@ -919,20 +936,14 @@ async function removeRecord(moduleId, id) {
   }
 }
 
-async function removePlatformRecord(entity, id) {
-  const storeName = entity === "companies" ? "platformCompanies"
-    : entity === "users" ? "platformUsers" : "platformRequests";
-  if (entity === "companies") {
-    const users = await getPlatformRecords("platformUsers");
-    if (users.some((user) => user.companyId === id)) {
-      showToast("No se puede eliminar una empresa asociada a usuarios. Cámbiala a Inactiva.", true);
-      return;
-    }
-  }
-  if (!window.confirm("¿Eliminar este registro administrativo local?")) return;
+async function decideRegistration(request, decision) {
+  const action = decision === "approved" ? "aprobar" : "rechazar";
+  if (!window.confirm(`¿Confirmas ${action} la solicitud de ${request.ownerName} para ${request.companyName}?`)) return;
   try {
-    await deletePlatformRecord(storeName, id);
-    showToast("Registro administrativo eliminado.");
+    await reviewPlatformRequest(request.id, decision);
+    showToast(decision === "approved"
+      ? "Solicitud aprobada. El propietario ya puede ingresar a su empresa."
+      : "Solicitud rechazada. La cuenta permanece bloqueada.");
     await renderPage();
   } catch (error) {
     showError(error);

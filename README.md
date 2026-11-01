@@ -40,9 +40,10 @@ Estas dos variables se incorporan al cliente público durante el build. Nunca po
 ## Preparar Supabase
 
 1. Crea un proyecto Supabase desde tu cuenta.
-2. En **SQL Editor**, ejecuta el contenido de `supabase/migrations/202610310001_initial_schema.sql`.
+2. En **SQL Editor**, ejecuta las migraciones en orden: `supabase/migrations/202610310001_initial_schema.sql` y después `supabase/migrations/202610310002_registration_approval_and_user_access.sql`.
 3. En **Authentication > URL Configuration**, configura la URL de GitHub Pages y la URL local de desarrollo como redirect URLs permitidas.
-4. Crea manualmente la cuenta inicial del administrador en el panel de autenticación de Supabase. Después promueve exclusivamente ese usuario con una consulta controlada como:
+4. Para permitir que los usuarios ingresen inmediatamente después de registrarse, abre **Authentication > Sign In / Providers > Email**, desactiva **Confirm email** y guarda el cambio. Esto permite cuentas con direcciones no verificadas; si prefieres validar que cada usuario controla su correo, deja la opción activa y el usuario deberá abrir el enlace de confirmación antes de ingresar.
+5. Crea manualmente la cuenta inicial del administrador en el panel de autenticación de Supabase. Después promueve exclusivamente ese usuario con una consulta controlada como:
 
    ```sql
    update public.profiles
@@ -50,13 +51,13 @@ Estas dos variables se incorporan al cliente público durante el build. Nunca po
    where email = 'correo-administrador@example.com';
    ```
 
-5. Añade la URL y la clave pública como variables del repositorio, y vuelve a ejecutar el workflow de Pages.
+6. Añade la URL y la clave pública como variables del repositorio, y vuelve a ejecutar el workflow de Pages.
 
-El formulario público crea una cuenta propietaria y una empresa. Cada cuenta de propietario solo puede crear una empresa; además, el cliente recuerda qué cuenta empresarial se usó primero en ese perfil de navegador y no permite cambiar a otra. Ese vínculo local puede borrarse o manipularse y no es una barrera de seguridad: la separación real se aplica en el servidor por cuenta y empresa. El administrador de Emprende + es una cuenta separada, creada manualmente; nunca se ofrece como opción en el registro público.
+El formulario público crea una solicitud vinculada a la cuenta, pero deja inactivos tanto al propietario como a su empresa hasta que el administrador de Emprende + la apruebe en **Solicitudes y registros**. Rechazarla mantiene ambos inactivos. Las cuentas creadas antes de aplicar esta migración no se convierten en solicitudes automáticamente. Cada cuenta de propietario solo puede crear una empresa; además, el cliente recuerda qué cuenta empresarial se usó primero en ese perfil de navegador y no permite cambiar a otra. Ese vínculo local puede borrarse o manipularse y no es una barrera de seguridad: la separación real se aplica en el servidor por cuenta y empresa. El administrador de Emprende + es una cuenta separada, creada manualmente; nunca se ofrece como opción en el registro público.
 
-Al abrir o recargar la aplicación siempre se muestra el formulario de inicio de sesión, tanto para propietarios como para el administrador de plataforma. La sesión no se conserva entre recargas; después de registrar una empresa, el propietario debe iniciar sesión explícitamente.
+Al abrir o recargar la aplicación siempre se muestra el formulario de inicio de sesión, tanto para propietarios como para el administrador de plataforma. La sesión no se conserva entre recargas. Después de registrarse, el usuario queda fuera hasta que su solicitud se apruebe; si intenta ingresar antes, la aplicación informa si está pendiente, fue rechazada o la cuenta está inactiva.
 
-Las cuentas de administrador y empleado de una empresa deben crearse mediante un flujo de invitación autenticado antes de su uso. El panel de plataforma permite revisar y ajustar los perfiles existentes; no finge que una cuenta manual sea una credencial.
+En **Control de accesos**, el administrador puede bloquear/reactivar cada perfil empresarial y cambiar el perfil entre Administrador y Empleado. El perfil Propietario no se reasigna, pero sí se puede bloquear o reactivar. La aprobación de una solicitud activa el perfil propietario y la empresa; el rechazo deja la cuenta inactiva. Las cuentas de administrador y empleado de una empresa deben crearse mediante un flujo de invitación autenticado antes de su uso. El administrador de plataforma no puede leer los datos operativos privados de las empresas.
 
 ## Privacidad y estado del producto
 
