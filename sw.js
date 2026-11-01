@@ -1,4 +1,4 @@
-const CACHE_NAME = "emprende-plus-v10";
+const CACHE_NAME = "emprende-plus-v11";
 const APP_ASSETS = [];
 const APP_SHELL = [
   "./",
