@@ -6,6 +6,7 @@
   "description": "Aplicación web progresiva de gestión empresarial para Emprende +",
   "scripts": {
     "build": "vite build",
+    "test": "node --test src/*.test.js",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {

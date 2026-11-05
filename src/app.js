@@ -9,6 +9,7 @@ import {
 } from "./cloud-data.js";
 import { downloadBackup, getBackups, restoreBackupFile } from "./backup.js";
 import { isBackendConfigured, loadIdentity, registerBusiness, signIn, signOut } from "./supabase.js";
+import { stockAfterPurchase, stockAfterSale } from "./inventory-ledger.js";
 
 const page = document.querySelector("#page-content");
 const nav = document.querySelector("#main-nav");
@@ -774,6 +775,7 @@ function addFormField(field, value = "", choices = field.options || []) {
     if (field.min !== undefined) control.min = String(field.min);
     if (field.step !== undefined) control.step = String(field.step);
   }
+  control.readOnly = Boolean(field.readonly);
   control.value = String(value ?? "");
   label.htmlFor = control.id;
   wrapper.append(label, control);
@@ -891,9 +893,9 @@ async function openRecordForm(moduleId, record = null) {
     grid.append(addFormField(field, record?.[field.name]));
     inputs.set(field.name, formFieldControl(grid, field.name));
   }
-  if (moduleId === "sales" || moduleId === "payroll") {
-    const choices = await getRecords(moduleId === "sales" ? "inventory" : "employees");
-    const source = moduleId === "sales" ? choices : choices.filter((employee) => employee.status !== "Inactivo");
+  if (["sales", "purchases", "payroll"].includes(moduleId)) {
+    const choices = await getRecords(moduleId === "payroll" ? "employees" : "inventory");
+    const source = moduleId === "payroll" ? choices.filter((employee) => employee.status !== "Inactivo") : choices;
     for (const field of module.fields.filter((item) => item.autocomplete || item.name === "productCode")) {
       const control = inputs.get(field.name);
       if (!control) continue;
@@ -902,15 +904,18 @@ async function openRecordForm(moduleId, record = null) {
       list.id = listId;
       source.forEach((item) => {
         const option = element("option");
-        option.value = moduleId === "sales" ? (item.code || item.name) : item.name;
-        option.label = moduleId === "sales" ? `${item.name} · ${item.code || "sin código"}` : (item.position || "");
+        option.value = moduleId === "payroll" ? item.name : (item.code || item.name);
+        option.label = moduleId === "payroll" ? (item.position || "") : `${item.name} · ${item.code || "sin código"}`;
         list.append(option);
       });
       control.setAttribute("list", listId);
       grid.append(list);
     }
-    if (moduleId === "sales") {
+    if (moduleId === "sales" || moduleId === "purchases") {
       if (record?.inventoryId) inputs.get("productCode").dataset.inventoryId = record.inventoryId;
+      const updatePurchaseTotal = () => {
+        inputs.get("amount").value = String(Number(inputs.get("quantity").value || 0) * Number(inputs.get("unitCost").value || 0));
+      };
       const fillProduct = () => {
         const code = inputs.get("productCode").value.trim().toLocaleLowerCase();
         const item = source.find((product) => [product.code, product.name].some((value) => String(value || "").trim().toLocaleLowerCase() === code));
@@ -920,8 +925,13 @@ async function openRecordForm(moduleId, record = null) {
         }
         inputs.get("productCode").dataset.inventoryId = item.id;
         inputs.get("detail").value = item.name;
-        inputs.get("unitPrice").value = String(item.price ?? "");
-        updateSaleTotal();
+        if (moduleId === "sales") {
+          inputs.get("unitPrice").value = String(item.price ?? "");
+          updateSaleTotal();
+        } else {
+          inputs.get("unitCost").value = String(item.cost ?? "");
+          updatePurchaseTotal();
+        }
       };
       const updateSaleTotal = () => {
         const qty = Number(inputs.get("quantity").value);
@@ -930,8 +940,13 @@ async function openRecordForm(moduleId, record = null) {
       };
       inputs.get("productCode").addEventListener("change", fillProduct);
       inputs.get("productCode").addEventListener("input", fillProduct);
-      inputs.get("quantity").addEventListener("input", updateSaleTotal);
-      inputs.get("unitPrice").addEventListener("input", updateSaleTotal);
+      if (moduleId === "sales") {
+        inputs.get("quantity").addEventListener("input", updateSaleTotal);
+        inputs.get("unitPrice").addEventListener("input", updateSaleTotal);
+      } else {
+        inputs.get("quantity").addEventListener("input", updatePurchaseTotal);
+        inputs.get("unitCost").addEventListener("input", updatePurchaseTotal);
+      }
     } else {
       const fillEmployee = () => {
         const name = inputs.get("employee").value.trim().toLocaleLowerCase();
@@ -969,6 +984,9 @@ async function openRecordForm(moduleId, record = null) {
       if (moduleId === "sales") {
         values.inventoryId = inputs.get("productCode").dataset.inventoryId || "";
         await saveSale(values, record);
+      } else if (moduleId === "purchases") {
+        values.inventoryId = inputs.get("productCode").dataset.inventoryId || "";
+        await savePurchase(values, record);
       } else {
         await saveRecord(module.id, values, record?.id);
       }
@@ -985,6 +1003,35 @@ async function openRecordForm(moduleId, record = null) {
   form.querySelector("input, select, textarea")?.focus();
 }
 
+async function savePurchase(values, previous) {
+  const inventory = await getRecords("inventory");
+  const selected = inventory.find((item) => item.id === values.inventoryId);
+  if (!selected) throw new Error("Selecciona un producto existente del inventario para registrar la compra.");
+  const oldProduct = inventory.find((item) => item.id === previous?.inventoryId);
+  const oldAddition = previous && previous.status !== "Anulado" ? Number(previous.quantity || 0) : 0;
+  const newAddition = values.status !== "Anulado" ? Number(values.quantity || 0) : 0;
+  if (oldProduct && oldProduct.id !== selected.id && oldAddition) {
+    const restoredQuantity = stockAfterPurchase(oldProduct.quantity, oldAddition, 0);
+    await saveRecord("inventory", inventoryValues(oldProduct, restoredQuantity), oldProduct.id);
+  }
+  const quantity = stockAfterPurchase(selected.quantity, oldProduct?.id === selected.id ? oldAddition : 0, newAddition);
+  await saveRecord("inventory", inventoryValues(selected, quantity), selected.id);
+  const purchase = await saveRecord("purchases", values, previous?.id);
+  const payable = (await getRecords("payables")).find((item) => item.purchaseId === purchase.id);
+  if (values.status === "Pendiente" && Number(values.amount) > 0) {
+    await saveRecord("payables", {
+      supplier: values.supplier,
+      detail: `Compra: ${values.detail}`,
+      date: values.date,
+      amount: Number(values.amount),
+      status: "Pendiente",
+      purchaseId: purchase.id
+    }, payable?.id);
+  } else if (payable) {
+    await deleteRecord(payable.id);
+  }
+}
+
 function formFieldControl(container, name) {
   return container.querySelector(`#field-${name}`);
 }
@@ -996,19 +1043,14 @@ async function saveSale(values, previous) {
   const oldProduct = inventory.find((item) => item.id === previous?.inventoryId);
   const oldDeduction = previous && previous.status !== "Anulado" ? Number(previous.quantity || 0) : 0;
   const newDeduction = values.status !== "Anulado" ? Number(values.quantity || 0) : 0;
-  if (selected && selected.id !== oldProduct?.id && Number(selected.quantity || 0) < newDeduction) {
-    throw new Error(`Existencias insuficientes de ${selected.name}. Disponibles: ${selected.quantity}.`);
-  }
-  if (selected && selected.id === oldProduct?.id && Number(selected.quantity || 0) + oldDeduction < newDeduction) {
-    throw new Error(`Existencias insuficientes de ${selected.name}. Disponibles: ${Number(selected.quantity || 0) + oldDeduction}.`);
-  }
+  if (selected && selected.id === oldProduct?.id) stockAfterSale(selected.quantity, oldDeduction, newDeduction);
   if (oldProduct && oldProduct.id !== selected?.id && oldDeduction) {
     await saveRecord("inventory", inventoryValues(oldProduct, Number(oldProduct.quantity || 0) + oldDeduction), oldProduct.id);
   }
   if (selected && selected.id !== oldProduct?.id && newDeduction) {
-    await saveRecord("inventory", inventoryValues(selected, Number(selected.quantity || 0) - newDeduction), selected.id);
+    await saveRecord("inventory", inventoryValues(selected, stockAfterSale(selected.quantity, 0, newDeduction)), selected.id);
   } else if (selected && newDeduction !== oldDeduction) {
-    await saveRecord("inventory", inventoryValues(selected, Number(selected.quantity || 0) + oldDeduction - newDeduction), selected.id);
+    await saveRecord("inventory", inventoryValues(selected, stockAfterSale(selected.quantity, oldDeduction, newDeduction)), selected.id);
   }
   const sale = await saveRecord("sales", values, previous?.id);
   const receivable = (await getRecords("receivables")).find((item) => item.saleId === sale.id);
@@ -1049,6 +1091,16 @@ async function removeRecord(moduleId, id) {
       }
       const receivable = (await getRecords("receivables")).find((item) => item.saleId === id);
       if (receivable) await deleteRecord(receivable.id);
+    } else if (moduleId === "purchases") {
+      const inventory = await getRecords("inventory");
+      const product = inventory.find((item) => item.id === record.inventoryId);
+      if (product && record.status !== "Anulado") {
+        const restoredQuantity = Number(product.quantity || 0) - Number(record.quantity || 0);
+        if (restoredQuantity < 0) throw new Error("No se puede eliminar la compra: sus unidades ya fueron vendidas o ajustadas.");
+        await saveRecord("inventory", inventoryValues(product, restoredQuantity), product.id);
+      }
+      const payable = (await getRecords("payables")).find((item) => item.purchaseId === id);
+      if (payable) await deleteRecord(payable.id);
     }
     await deleteRecord(id);
     showToast("Registro eliminado y copia interna actualizada.");

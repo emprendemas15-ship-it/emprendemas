@@ -5,13 +5,13 @@ export const modules = [
   { id: "sales", label: "Ventas", icon: "↗", group: "OPERACIÓN", description: "Registra y consulta las ventas del negocio.", fields: [
     { name: "date", label: "Fecha", type: "date", required: true },
     { name: "customer", label: "Cliente", type: "text" },
-    { name: "productCode", label: "Código / referencia", type: "text" },
+    { name: "productCode", label: "Código / referencia", type: "text", required: true },
     { name: "detail", label: "Detalle de la venta", type: "text", required: true },
     { name: "quantity", label: "Cantidad", type: "number", min: 0.01, step: 0.01, required: true },
     { name: "unitPrice", label: "Valor unitario", type: "number", min: 0, step: 0.01, required: true },
-    { name: "amount", label: "Total", type: "number", min: 0, step: 0.01, required: true },
+    { name: "amount", label: "Total", type: "number", min: 0, step: 0.01, required: true, readonly: true },
     { name: "paymentMethod", label: "Medio de pago", type: "select", options: ["Efectivo", "Transferencia", "Tarjeta", "Otro"] },
-    { name: "status", label: "Estado", type: "select", options: commonStatus }
+    { name: "status", label: "Estado", type: "select", options: commonStatus, required: true }
   ] },
   { id: "expenses", label: "Gastos", icon: "↘", group: "OPERACIÓN", description: "Registra los gastos generales del negocio.", fields: [
     { name: "date", label: "Fecha", type: "date", required: true },
@@ -24,9 +24,12 @@ export const modules = [
   { id: "purchases", label: "Compras", icon: "▣", group: "OPERACIÓN", description: "Registra compras realizadas a proveedores.", fields: [
     { name: "date", label: "Fecha", type: "date", required: true },
     { name: "supplier", label: "Proveedor", type: "text", required: true },
+    { name: "productCode", label: "Código / referencia", type: "text", required: true },
     { name: "detail", label: "Detalle de compra", type: "text", required: true },
-    { name: "amount", label: "Total", type: "number", min: 0, step: 0.01, required: true },
-    { name: "status", label: "Estado", type: "select", options: commonStatus }
+    { name: "quantity", label: "Cantidad comprada", type: "number", min: 0.01, step: 0.01, required: true },
+    { name: "unitCost", label: "Costo unitario", type: "number", min: 0, step: 0.01, required: true },
+    { name: "amount", label: "Total", type: "number", min: 0, step: 0.01, required: true, readonly: true },
+    { name: "status", label: "Estado", type: "select", options: commonStatus, required: true }
   ] },
   { id: "inventory", label: "Inventario básico", icon: "▤", group: "OPERACIÓN", description: "Consulta las existencias y datos básicos de productos.", fields: [
     { name: "name", label: "Producto", type: "text", required: true },
