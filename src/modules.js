@@ -5,8 +5,10 @@ export const modules = [
   { id: "sales", label: "Ventas", icon: "↗", group: "OPERACIÓN", description: "Registra y consulta las ventas del negocio.", fields: [
     { name: "date", label: "Fecha", type: "date", required: true },
     { name: "customer", label: "Cliente", type: "text" },
+    { name: "productCode", label: "Código / referencia", type: "text" },
     { name: "detail", label: "Detalle de la venta", type: "text", required: true },
     { name: "quantity", label: "Cantidad", type: "number", min: 0.01, step: 0.01, required: true },
+    { name: "unitPrice", label: "Valor unitario", type: "number", min: 0, step: 0.01, required: true },
     { name: "amount", label: "Total", type: "number", min: 0, step: 0.01, required: true },
     { name: "paymentMethod", label: "Medio de pago", type: "select", options: ["Efectivo", "Transferencia", "Tarjeta", "Otro"] },
     { name: "status", label: "Estado", type: "select", options: commonStatus }
@@ -59,7 +61,7 @@ export const modules = [
   ] },
   { id: "payroll", label: "Nómina", icon: "▥", group: "PERSONAL", description: "Registra pagos de nómina. No calcula obligaciones legales o fiscales.", fields: [
     { name: "date", label: "Fecha de pago", type: "date", required: true },
-    { name: "employee", label: "Empleado", type: "text", required: true },
+    { name: "employee", label: "Empleado", type: "text", autocomplete: "employees", required: true },
     { name: "period", label: "Periodo", type: "text", required: true },
     { name: "base", label: "Pago base", type: "number", min: 0, step: 0.01 },
     { name: "additions", label: "Adiciones", type: "number", min: 0, step: 0.01 },

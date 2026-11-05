@@ -1,4 +1,4 @@
-const CACHE_NAME = "emprende-plus-v10";
+const CACHE_NAME = "emprende-plus-v12";
 const APP_ASSETS = [];
 const APP_SHELL = [
   "./",
@@ -26,6 +26,21 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET" || new URL(event.request.url).origin !== self.location.origin) return;
+  if (event.request.mode === "navigate") {
+    event.respondWith(
+      fetch(event.request).then((response) => {
+        if (response.ok) {
+          const copy = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+        }
+        return response;
+      }).catch(async () => {
+        const cached = await caches.match(event.request);
+        return cached || caches.match(new URL("./index.html", self.registration.scope));
+      })
+    );
+    return;
+  }
   event.respondWith(
     caches.match(event.request).then((cached) => {
       if (cached) return cached;

@@ -65,8 +65,29 @@ export async function loadIdentity() {
     .eq("id", sessionData.session.user.id)
     .maybeSingle();
   if (profileError) throw profileError;
-  if (!profile || profile.status !== "active" ||
-      !["platform_admin", "owner", "administrator", "employee"].includes(profile.role)) {
+  if (!profile) {
+    await signOut();
+    throw new Error("Esta cuenta no tiene un perfil autorizado. Contacta al administrador.");
+  }
+  if (profile.status !== "active") {
+    let message = "Esta cuenta está inactiva. Contacta al administrador.";
+    if (profile.role === "owner") {
+      const { data: request, error: requestError } = await supabase
+        .from("platform_requests")
+        .select("status")
+        .eq("auth_user_id", profile.id)
+        .maybeSingle();
+      if (requestError) throw requestError;
+      if (request?.status === "pending") {
+        message = "Tu solicitud de registro está pendiente de aprobación. Podrás ingresar cuando Emprende + la apruebe.";
+      } else if (request?.status === "rejected") {
+        message = "Tu solicitud de registro fue rechazada. Contacta al administrador de Emprende +.";
+      }
+    }
+    await signOut();
+    throw new Error(message);
+  }
+  if (!["platform_admin", "owner", "administrator", "employee"].includes(profile.role)) {
     await signOut();
     throw new Error("Esta cuenta no tiene un perfil activo autorizado. Contacta al administrador.");
   }

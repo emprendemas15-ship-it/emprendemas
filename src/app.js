@@ -4,8 +4,8 @@ import {
   platformCompanyFields, platformModules, platformRequestFields, platformUserFields
 } from "./platform-modules.js";
 import {
-  deletePlatformRecord, deleteRecord, getPlatformRecords, getPlatformSetting, getRecords, getSetting,
-  savePlatformRecord, savePlatformSetting, saveRecord, saveSetting, setCloudIdentity
+  deleteRecord, getPlatformRecords, getPlatformSetting, getRecords, getSetting,
+  reviewPlatformRequest, savePlatformRecord, savePlatformSetting, saveRecord, saveSetting, setCloudIdentity
 } from "./cloud-data.js";
 import { downloadBackup, getBackups, restoreBackupFile } from "./backup.js";
 import { isBackendConfigured, loadIdentity, registerBusiness, signIn, signOut } from "./supabase.js";
@@ -222,18 +222,20 @@ async function handleAuthSubmit(event, form, submit) {
       if (result.session) await signOut();
       authView = "login";
       renderAuthScreen();
-      if (!result.session) {
-        showToast("Cuenta creada. Confirma tu correo para activar el ingreso.");
-        return;
-      }
-      showToast("Empresa registrada. Inicia sesión para continuar.");
+      showToast(result.session
+        ? "Solicitud enviada. Podrás ingresar cuando el administrador apruebe tu empresa."
+        : "Solicitud creada. Confirma tu correo si Supabase te lo solicita; después espera la aprobación de tu empresa.");
       return;
     } else {
       await signIn(values.email.trim(), values.password);
     }
     await activateIdentity();
   } catch (error) {
-    showError(error);
+    if (error?.code === "email_not_confirmed") {
+      showError(new Error("Este correo aún no está confirmado. Que la empresa figure activa no confirma el email; abre el enlace de verificación enviado a ese correo."));
+    } else {
+      showError(error);
+    }
     submit.disabled = false;
   }
 }
@@ -389,11 +391,14 @@ async function renderPlatformDirectory(module) {
     : entity === "users"
       ? "Perfiles empresariales autenticados y su estado de acceso."
       : "Solicitudes administrativas de registro.";
-  const action = entity === "requests" && module.id === "platform-requests"
-    ? addButton("+ Registrar solicitud", "button-primary", () => openPlatformForm(entity))
-    : null;
-  pageHeading(title, description, action);
+  pageHeading(title, description);
   platformNotice();
+
+  if (entity === "requests") {
+    const requestNotice = element("div", "notice");
+    requestNotice.textContent = "Las nuevas cuentas aparecen aquí como pendientes. Aprobar habilita la empresa y el acceso de su propietario; rechazar mantiene la cuenta bloqueada.";
+    page.append(requestNotice);
+  }
 
   if (entity === "users" && !module.status) {
     const note = element("div", "notice");
@@ -447,7 +452,9 @@ function renderPlatformTable(container, rows, entity, withActions, fields, compa
     : entity === "users"
       ? ["name", "email", "companyId", "role", "status"]
       : ["companyName", "activity", "ownerName", "requestedAt", "status"];
-  const hasActions = withActions && (entity !== "users" || rows.some((record) => record.role !== "Propietario"));
+  const hasActions = withActions && (entity === "companies" || entity === "users"
+    ? rows.length > 0
+    : entity === "requests" && rows.some((record) => record.authUserId && record.status === "Pendiente"));
   const table = element("table", "data-table");
   const head = element("thead");
   const headRow = element("tr");
@@ -473,18 +480,26 @@ function renderPlatformTable(container, rows, entity, withActions, fields, compa
       }
       row.append(cell);
     }
-    if (hasActions && (entity === "companies" || entity === "users" || entity === "requests")) {
+    if (hasActions) {
       const actions = element("td");
       const group = element("div", "table-actions");
-      const edit = element("button", "", "Editar");
-      edit.type = "button";
-      edit.addEventListener("click", () => openPlatformForm(entity, record));
-      group.append(edit);
       if (entity === "requests") {
-        const remove = element("button", "", "Eliminar");
-        remove.type = "button";
-        remove.addEventListener("click", () => removePlatformRecord(entity, record.id));
-        group.append(remove);
+        if (record.authUserId && record.status === "Pendiente") {
+          const approve = element("button", "", "Aprobar");
+          approve.type = "button";
+          approve.addEventListener("click", () => decideRegistration(record, "approved"));
+          const reject = element("button", "", "Rechazar");
+          reject.type = "button";
+          reject.addEventListener("click", () => decideRegistration(record, "rejected"));
+          group.append(approve, reject);
+        } else {
+          group.append(element("span", "permission-note", record.authUserId ? "Revisada" : "Registro histórico"));
+        }
+      } else {
+        const edit = element("button", "", entity === "users" ? "Gestionar acceso" : "Editar");
+        edit.type = "button";
+        edit.addEventListener("click", () => openPlatformForm(entity, record));
+        group.append(edit);
       }
       actions.append(group);
       row.append(actions);
@@ -498,10 +513,10 @@ function renderPlatformTable(container, rows, entity, withActions, fields, compa
 async function renderPlatformAccess() {
   const users = await getPlatformRecords("platformUsers");
   const companies = await getPlatformRecords("platformCompanies");
-  pageHeading("Control de accesos", "Revisa perfiles empresariales registrados, sin crear sesiones de usuario.");
+  pageHeading("Control de accesos", "Activa o bloquea cuentas y asigna el perfil de acceso correspondiente.");
   platformNotice();
   const notice = element("div", "notice warning");
-  notice.textContent = "El administrador de plataforma puede consultar y desactivar perfiles empresariales, pero no puede leer sus datos operativos.";
+  notice.textContent = "Puedes activar o bloquear cada perfil y asignar Administrador o Empleado. El perfil Propietario no se puede cambiar; solo se puede activar o bloquear. Esto no da acceso a los datos operativos de la empresa desde el panel de plataforma.";
   page.append(notice);
   const panel = element("section", "panel");
   const header = element("div", "panel-header");
@@ -770,16 +785,16 @@ async function openPlatformForm(entity, record = null) {
     showToast("Este registro se crea mediante el alta empresarial autenticada.", true);
     return;
   }
-  const storeName = entity === "companies" ? "platformCompanies"
-    : entity === "users" ? "platformUsers" : "platformRequests";
+  const storeName = entity === "companies" ? "platformCompanies" : "platformUsers";
   const fields = entity === "companies"
     ? platformCompanyFields.filter((field) => field.name !== "registeredAt")
     : entity === "users"
-      ? platformUserFields.filter((field) => ["role", "status"].includes(field.name))
+      ? platformUserFields.filter((field) => field.name === "status"
+        || (field.name === "role" && record?.role !== "Propietario"))
         .map((field) => field.name === "role"
           ? { ...field, options: ["Administrador", "Empleado"] }
           : field)
-      : platformRequestFields;
+      : [];
   const companies = entity === "users" ? await getPlatformRecords("platformCompanies") : [];
   if (entity === "users" && !companies.length) {
     showToast("Registra primero una empresa para poder asociar usuarios.", true);
@@ -820,7 +835,9 @@ async function openPlatformForm(entity, record = null) {
   }
   form.append(grid);
   if (entity === "users") {
-    const hint = element("p", "permission-note", "El rol y el estado actualizan los permisos de esta cuenta autenticada. Los perfiles de propietario se administran desde el estado de su empresa.");
+    const hint = element("p", "permission-note", record.role === "Propietario"
+      ? "El propietario puede activarse o bloquearse. Su perfil no se puede cambiar desde el control de accesos."
+      : "El perfil determina el nivel de acceso de esta cuenta: Administrador o Empleado. El estado permite bloquearla o reactivarla.");
     form.append(hint);
   }
   const actions = element("div", "form-actions");
@@ -836,10 +853,10 @@ async function openPlatformForm(entity, record = null) {
     try {
       const formValues = new FormData(form);
       const values = Object.fromEntries(fields.map((field) => [field.name, formValues.get(field.name) || ""]));
+      if (entity === "users" && !values.role) values.role = record.role;
       await savePlatformRecord(storeName, values, record?.id);
       modalRoot.replaceChildren();
-      showToast(entity === "users" ? "Acceso del usuario actualizado." : entity === "requests"
-        ? "Solicitud guardada." : "Datos de empresa actualizados.");
+      showToast(entity === "users" ? "Acceso del usuario actualizado." : "Datos de empresa actualizados.");
       await renderPage();
     } catch (error) {
       showError(error);
@@ -851,7 +868,7 @@ async function openPlatformForm(entity, record = null) {
   form.querySelector("input, select, textarea")?.focus();
 }
 
-function openRecordForm(moduleId, record = null) {
+async function openRecordForm(moduleId, record = null) {
   const module = findModule(moduleId);
   if (!module?.fields) return;
   modalRoot.replaceChildren();
@@ -869,7 +886,68 @@ function openRecordForm(moduleId, record = null) {
   header.append(close);
   const form = element("form", "modal-form");
   const grid = element("div", "form-grid");
-  for (const field of module.fields) grid.append(addFormField(field, record?.[field.name]));
+  const inputs = new Map();
+  for (const field of module.fields) {
+    grid.append(addFormField(field, record?.[field.name]));
+    inputs.set(field.name, formFieldControl(grid, field.name));
+  }
+  if (moduleId === "sales" || moduleId === "payroll") {
+    const choices = await getRecords(moduleId === "sales" ? "inventory" : "employees");
+    const source = moduleId === "sales" ? choices : choices.filter((employee) => employee.status !== "Inactivo");
+    for (const field of module.fields.filter((item) => item.autocomplete || item.name === "productCode")) {
+      const control = inputs.get(field.name);
+      if (!control) continue;
+      const listId = `choices-${field.name}`;
+      const list = element("datalist");
+      list.id = listId;
+      source.forEach((item) => {
+        const option = element("option");
+        option.value = moduleId === "sales" ? (item.code || item.name) : item.name;
+        option.label = moduleId === "sales" ? `${item.name} · ${item.code || "sin código"}` : (item.position || "");
+        list.append(option);
+      });
+      control.setAttribute("list", listId);
+      grid.append(list);
+    }
+    if (moduleId === "sales") {
+      if (record?.inventoryId) inputs.get("productCode").dataset.inventoryId = record.inventoryId;
+      const fillProduct = () => {
+        const code = inputs.get("productCode").value.trim().toLocaleLowerCase();
+        const item = source.find((product) => [product.code, product.name].some((value) => String(value || "").trim().toLocaleLowerCase() === code));
+        if (!item) {
+          delete inputs.get("productCode").dataset.inventoryId;
+          return;
+        }
+        inputs.get("productCode").dataset.inventoryId = item.id;
+        inputs.get("detail").value = item.name;
+        inputs.get("unitPrice").value = String(item.price ?? "");
+        updateSaleTotal();
+      };
+      const updateSaleTotal = () => {
+        const qty = Number(inputs.get("quantity").value);
+        const price = Number(inputs.get("unitPrice").value);
+        if (Number.isFinite(qty * price)) inputs.get("amount").value = String(qty * price);
+      };
+      inputs.get("productCode").addEventListener("change", fillProduct);
+      inputs.get("productCode").addEventListener("input", fillProduct);
+      inputs.get("quantity").addEventListener("input", updateSaleTotal);
+      inputs.get("unitPrice").addEventListener("input", updateSaleTotal);
+    } else {
+      const fillEmployee = () => {
+        const name = inputs.get("employee").value.trim().toLocaleLowerCase();
+        const employee = source.find((item) => item.name.trim().toLocaleLowerCase() === name);
+        if (employee && !record) inputs.get("base").value = String(employee.salary ?? "");
+        updatePayrollTotal();
+      };
+      const updatePayrollTotal = () => {
+        const total = Number(inputs.get("base").value || 0) + Number(inputs.get("additions").value || 0) - Number(inputs.get("deductions").value || 0);
+        inputs.get("amount").value = String(Math.max(0, total));
+      };
+      inputs.get("employee").addEventListener("change", fillEmployee);
+      inputs.get("employee").addEventListener("input", fillEmployee);
+      for (const name of ["base", "additions", "deductions"]) inputs.get(name).addEventListener("input", updatePayrollTotal);
+    }
+  }
   form.append(grid);
   const actions = element("div", "form-actions");
   const cancel = addButton("Cancelar", "button-secondary", () => modalRoot.replaceChildren());
@@ -888,7 +966,12 @@ function openRecordForm(moduleId, record = null) {
         const value = formValues.get(field.name);
         values[field.name] = field.type === "number" && value !== "" ? Number(value) : value;
       }
-      await saveRecord(module.id, values, record?.id);
+      if (moduleId === "sales") {
+        values.inventoryId = inputs.get("productCode").dataset.inventoryId || "";
+        await saveSale(values, record);
+      } else {
+        await saveRecord(module.id, values, record?.id);
+      }
       modalRoot.replaceChildren();
       showToast("Registro guardado. Se creó una copia interna automática.");
       await renderPage();
@@ -902,6 +985,52 @@ function openRecordForm(moduleId, record = null) {
   form.querySelector("input, select, textarea")?.focus();
 }
 
+function formFieldControl(container, name) {
+  return container.querySelector(`#field-${name}`);
+}
+
+async function saveSale(values, previous) {
+  const inventory = await getRecords("inventory");
+  const selected = inventory.find((item) => item.id === values.inventoryId);
+  if (values.productCode && !selected) throw new Error("Selecciona una referencia válida del inventario.");
+  const oldProduct = inventory.find((item) => item.id === previous?.inventoryId);
+  const oldDeduction = previous && previous.status !== "Anulado" ? Number(previous.quantity || 0) : 0;
+  const newDeduction = values.status !== "Anulado" ? Number(values.quantity || 0) : 0;
+  if (selected && selected.id !== oldProduct?.id && Number(selected.quantity || 0) < newDeduction) {
+    throw new Error(`Existencias insuficientes de ${selected.name}. Disponibles: ${selected.quantity}.`);
+  }
+  if (selected && selected.id === oldProduct?.id && Number(selected.quantity || 0) + oldDeduction < newDeduction) {
+    throw new Error(`Existencias insuficientes de ${selected.name}. Disponibles: ${Number(selected.quantity || 0) + oldDeduction}.`);
+  }
+  if (oldProduct && oldProduct.id !== selected?.id && oldDeduction) {
+    await saveRecord("inventory", inventoryValues(oldProduct, Number(oldProduct.quantity || 0) + oldDeduction), oldProduct.id);
+  }
+  if (selected && selected.id !== oldProduct?.id && newDeduction) {
+    await saveRecord("inventory", inventoryValues(selected, Number(selected.quantity || 0) - newDeduction), selected.id);
+  } else if (selected && newDeduction !== oldDeduction) {
+    await saveRecord("inventory", inventoryValues(selected, Number(selected.quantity || 0) + oldDeduction - newDeduction), selected.id);
+  }
+  const sale = await saveRecord("sales", values, previous?.id);
+  const receivable = (await getRecords("receivables")).find((item) => item.saleId === sale.id);
+  if (values.status === "Pendiente" && Number(values.amount) > 0) {
+    await saveRecord("receivables", {
+      customer: values.customer || "Cliente sin nombre",
+      detail: `Venta: ${values.detail}`,
+      date: values.date,
+      amount: Number(values.amount),
+      status: "Pendiente",
+      saleId: sale.id
+    }, receivable?.id);
+  } else if (receivable) {
+    await deleteRecord(receivable.id);
+  }
+}
+
+function inventoryValues(item, quantity) {
+  return { name: item.name, code: item.code || "", category: item.category || "", quantity,
+    unit: item.unit || "", cost: item.cost ?? "", price: item.price ?? "", minimum: item.minimum ?? "" };
+}
+
 function closeOnBackdrop(event) {
   if (event.target === modalRoot) modalRoot.replaceChildren();
 }
@@ -910,7 +1039,17 @@ async function removeRecord(moduleId, id) {
   if (!window.confirm("¿Eliminar este registro? Esta acción no se puede deshacer desde la lista.")) return;
   try {
     const records = await getRecords(moduleId);
-    if (!records.some((record) => record.id === id)) throw new Error("No se encontró el registro que intentas eliminar.");
+    const record = records.find((item) => item.id === id);
+    if (!record) throw new Error("No se encontró el registro que intentas eliminar.");
+    if (moduleId === "sales") {
+      const inventory = await getRecords("inventory");
+      const product = inventory.find((item) => item.id === record.inventoryId);
+      if (product && record.status !== "Anulado") {
+        await saveRecord("inventory", inventoryValues(product, Number(product.quantity || 0) + Number(record.quantity || 0)), product.id);
+      }
+      const receivable = (await getRecords("receivables")).find((item) => item.saleId === id);
+      if (receivable) await deleteRecord(receivable.id);
+    }
     await deleteRecord(id);
     showToast("Registro eliminado y copia interna actualizada.");
     await renderPage();
@@ -919,20 +1058,14 @@ async function removeRecord(moduleId, id) {
   }
 }
 
-async function removePlatformRecord(entity, id) {
-  const storeName = entity === "companies" ? "platformCompanies"
-    : entity === "users" ? "platformUsers" : "platformRequests";
-  if (entity === "companies") {
-    const users = await getPlatformRecords("platformUsers");
-    if (users.some((user) => user.companyId === id)) {
-      showToast("No se puede eliminar una empresa asociada a usuarios. Cámbiala a Inactiva.", true);
-      return;
-    }
-  }
-  if (!window.confirm("¿Eliminar este registro administrativo local?")) return;
+async function decideRegistration(request, decision) {
+  const action = decision === "approved" ? "aprobar" : "rechazar";
+  if (!window.confirm(`¿Confirmas ${action} la solicitud de ${request.ownerName} para ${request.companyName}?`)) return;
   try {
-    await deletePlatformRecord(storeName, id);
-    showToast("Registro administrativo eliminado.");
+    await reviewPlatformRequest(request.id, decision);
+    showToast(decision === "approved"
+      ? "Solicitud aprobada. El propietario ya puede ingresar a su empresa."
+      : "Solicitud rechazada. La cuenta permanece bloqueada.");
     await renderPage();
   } catch (error) {
     showError(error);
@@ -1092,7 +1225,9 @@ async function start() {
     showError(error);
   }
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js").catch(showError);
+    navigator.serviceWorker.register("./sw.js", { updateViaCache: "none" })
+      .then((registration) => registration.update())
+      .catch(showError);
   }
 }
 
