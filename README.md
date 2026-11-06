@@ -40,7 +40,7 @@ Estas dos variables se incorporan al cliente público durante el build. Nunca po
 ## Preparar Supabase
 
 1. Crea un proyecto Supabase desde tu cuenta.
-2. En **SQL Editor**, ejecuta las migraciones en orden: `supabase/migrations/202610310001_initial_schema.sql` y después `supabase/migrations/202610310002_registration_approval_and_user_access.sql`.
+2. En **SQL Editor**, ejecuta las migraciones en orden: `supabase/migrations/202610310001_initial_schema.sql`, `supabase/migrations/202610310002_registration_approval_and_user_access.sql`, `supabase/migrations/202611060001_linked_financial_transactions.sql` y `supabase/migrations/202611060002_business_service_records.sql`.
 3. En **Authentication > URL Configuration**, configura la URL de GitHub Pages y la URL local de desarrollo como redirect URLs permitidas.
 4. Para permitir que los usuarios ingresen inmediatamente después de registrarse, abre **Authentication > Sign In / Providers > Email**, desactiva **Confirm email** y guarda el cambio. Esto permite cuentas con direcciones no verificadas; si prefieres validar que cada usuario controla su correo, deja la opción activa y el usuario deberá abrir el enlace de confirmación antes de ingresar.
 5. Crea manualmente la cuenta inicial del administrador en el panel de autenticación de Supabase. Después promueve exclusivamente ese usuario con una consulta controlada como:
@@ -60,6 +60,12 @@ Al abrir o recargar la aplicación siempre se muestra el formulario de inicio de
 En **Control de accesos**, el administrador puede bloquear/reactivar cada perfil empresarial y cambiar el perfil entre Administrador y Empleado. El perfil Propietario no se reasigna, pero sí se puede bloquear o reactivar. La aprobación de una solicitud activa el perfil propietario y la empresa; el rechazo deja la cuenta inactiva. Las cuentas de administrador y empleado de una empresa deben crearse mediante un flujo de invitación autenticado antes de su uso. El administrador de plataforma no puede leer los datos operativos privados de las empresas.
 
 ## Privacidad y estado del producto
+
+## Categorías, operaciones y nómina
+
+El registro ofrece tres perfiles: Tienda para el hogar, Papelería y Restaurante. Cada perfil adapta su navegación y formularios; producción y materias primas son exclusivos del restaurante, mientras que la papelería incluye servicios de impresión/fotocopia. Las compras alimentan inventario y costo; las ventas descuentan existencias y generan caja o cartera según el medio de pago. Los pagos a cartera/proveedores quedan enlazados a sus saldos.
+
+La liquidación de nómina implementada cubre empleados ordinarios y periodos de 2026: salario, auxilio de transporte, recargos/horas, aportes, deducciones y provisiones. El empleador debe configurar la tarifa ARL y confirmar si cumple los requisitos de exoneración. La retención en la fuente se ingresa manualmente; no reemplaza PILA, validación laboral/tributaria ni revisión por contador. Ejecuta todas las migraciones en el SQL Editor de Supabase antes de usar las operaciones enlazadas.
 
 El inicio de sesión consulta el rol empresarial o el rol interno desde Supabase. Las políticas RLS separan empresas y bloquean al administrador de plataforma el acceso a registros operativos. Las operaciones de negocio requieren conexión; la PWA almacena sus archivos estáticos para volver a abrir la interfaz sin conexión, pero todavía no tiene una cola de escritura/sincronización offline.
 

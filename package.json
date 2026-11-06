@@ -6,7 +6,8 @@
   "description": "Aplicación web progresiva de gestión empresarial para Emprende +",
   "scripts": {
     "build": "vite build",
-    "preview": "vite preview --host 127.0.0.1"
+    "preview": "vite preview --host 127.0.0.1",
+    "test": "node --test"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4"

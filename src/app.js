@@ -1,12 +1,20 @@
 import logoUrl from "../assets/emprende-plus-logo.jpeg";
 import { modules, findModule } from "./modules.js";
+import { businessCategories, getBusinessModules } from "./business-categories.js";
+import { calculateColombianPayroll } from "./colombian-payroll.js";
 import {
   platformCompanyFields, platformModules, platformRequestFields, platformUserFields
 } from "./platform-modules.js";
 import {
   deleteRecord, getPlatformRecords, getPlatformSetting, getRecords, getSetting,
-  reviewPlatformRequest, savePlatformRecord, savePlatformSetting, saveRecord, saveSetting, setCloudIdentity
+  reviewPlatformRequest, saveFinancialTransaction, savePlatformRecord, savePlatformSetting,
+  saveRecord, saveSetting, setCloudIdentity
 } from "./cloud-data.js";
+import {
+  buildExpenseTransaction, buildPayrollTransaction, buildProductionTransaction,
+  buildPurchaseTransaction, buildPayablePaymentTransaction,
+  buildReceivablePaymentTransaction, buildSaleTransaction, buildServiceSaleTransaction
+} from "./financial-ledger.js";
 import { downloadBackup, getBackups, restoreBackupFile } from "./backup.js";
 import { isBackendConfigured, loadIdentity, registerBusiness, signIn, signOut } from "./supabase.js";
 
@@ -28,7 +36,8 @@ let currentIdentity = null;
 let authView = "login";
 
 function currentModules() {
-  return workspace === PLATFORM_WORKSPACE ? platformModules : modules;
+  if (workspace === PLATFORM_WORKSPACE) return platformModules;
+  return getBusinessModules(currentIdentity?.company?.activity, modules);
 }
 
 function currentModule(id) {
@@ -154,7 +163,7 @@ function renderAuthScreen() {
     ? [
       { name: "ownerName", label: "Nombre del propietario", type: "text", required: true, maxLength: 160 },
       { name: "businessName", label: "Nombre comercial", type: "text", required: true, maxLength: 160 },
-      { name: "activity", label: "Actividad comercial", type: "select", options: ["Papelería", "Accesorios para el hogar", "Restaurante de comidas rápidas", "Otro"], required: true },
+      { name: "activity", label: "Tipo de negocio", type: "select", options: businessCategories.map((category) => category.label), required: true },
       { name: "phone", label: "Teléfono", type: "tel", maxLength: 80 },
       { name: "email", label: "Correo electrónico", type: "email", required: true },
       { name: "password", label: "Contraseña (mínimo 12 caracteres)", type: "password", required: true, minLength: 12 },
@@ -567,7 +576,7 @@ async function renderPlatformSettings() {
 function formatNumber(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return "—";
-  return new Intl.NumberFormat("es", { maximumFractionDigits: 2 }).format(number);
+  return new Intl.NumberFormat("es-CO", { maximumFractionDigits: 2 }).format(number);
 }
 
 function statCard(title, value, note, icon) {
@@ -714,15 +723,21 @@ async function renderRecords(module) {
         row.append(element("td", "", displayValue(record[field.name], field.type)));
       }
       const actions = element("td");
-      const actionGroup = element("div", "table-actions");
-      const edit = element("button", "", "Editar");
-      edit.type = "button";
-      edit.addEventListener("click", () => openRecordForm(module.id, record));
-      const remove = element("button", "", "Eliminar");
-      remove.type = "button";
-      remove.addEventListener("click", () => removeRecord(module.id, record.id));
-      actionGroup.append(edit, remove);
-      actions.append(actionGroup);
+      if (module.id === "payroll") {
+        actions.append(addButton("Ver desprendible", "button-secondary", () => openPayrollDetail(record)));
+      } else if (record.linkedTransactionId) {
+        actions.append(element("small", "", "Operación enlazada"));
+      } else {
+        const actionGroup = element("div", "table-actions");
+        const edit = element("button", "", "Editar");
+        edit.type = "button";
+        edit.addEventListener("click", () => openRecordForm(module.id, record));
+        const remove = element("button", "", "Eliminar");
+        remove.type = "button";
+        remove.addEventListener("click", () => removeRecord(module.id, record.id));
+        actionGroup.append(edit, remove);
+        actions.append(actionGroup);
+      }
       row.append(actions);
       body.append(row);
     }
@@ -732,6 +747,71 @@ async function renderRecords(module) {
   };
   search.addEventListener("input", paint);
   paint();
+}
+
+function openPayrollDetail(record) {
+  modalRoot.replaceChildren();
+  const modal = element("section", "modal");
+  modal.setAttribute("role", "dialog");
+  modal.setAttribute("aria-modal", "true");
+  const header = element("div", "modal-header");
+  header.append(element("h2", "", `Desprendible de nómina · ${record.period || "Periodo"}`));
+  const close = element("button", "modal-close", "×");
+  close.type = "button";
+  close.setAttribute("aria-label", "Cerrar desprendible");
+  close.addEventListener("click", () => modalRoot.replaceChildren());
+  header.append(close);
+  modal.append(header, element("p", "auth-description", `${record.employee || "Empleado"} · ${record.daysWorked ?? "—"} días liquidados · Pago: ${record.status || "—"}`));
+  if (record.minimumWageWarning) {
+    modal.append(element("div", "notice warning", "El salario base registrado está por debajo del mínimo proporcional configurado para 2026; verifica jornada, días y régimen del trabajador."));
+  }
+
+  const formatCOP = (value) => value === undefined || value === null ? "—" : `COP ${formatNumber(value)}`;
+  const sections = [
+    ["Devengado", [
+      ["Salario básico liquidado", record.base], ["Recargos y otros salariales", record.additions],
+      ["Auxilio de transporte", record.transportAllowance], ["Devengado bruto", record.grossPay]
+    ]],
+    ["Deducciones del trabajador", [
+      ["Salud (4%)", record.deductionDetails?.health], ["Pensión (4%)", record.deductionDetails?.pension],
+      ["Fondo de solidaridad pensional", record.deductionDetails?.solidarityFund],
+      ["Otras deducciones autorizadas", record.deductionDetails?.other],
+      ["Retención en la fuente ingresada", record.deductionDetails?.incomeTaxWithholding],
+      ["Total deducciones", record.deductions]
+    ]],
+    ["Seguridad social y parafiscales · empleador", [
+      ["IBC", record.ibc], ["Salud patronal", record.employerContributions?.health],
+      ["Pensión patronal", record.employerContributions?.pension], ["ARL", record.employerContributions?.arl],
+      ["Caja de compensación", record.employerContributions?.familyCompensation],
+      ["SENA", record.employerContributions?.sena], ["ICBF", record.employerContributions?.icbf],
+      ["Total aportes patronales", record.totalEmployerContributions]
+    ]],
+    ["Provisiones y pago", [
+      ["Prima de servicios", record.provisions?.prima], ["Cesantías", record.provisions?.cesantias],
+      ["Intereses de cesantías", record.provisions?.cesantiasInterest], ["Vacaciones", record.provisions?.vacation],
+      ["Neto pagado al trabajador", record.netPay], ["Costo total para la empresa", record.employerCost]
+    ]]
+  ];
+  for (const [title, rows] of sections) {
+    const panel = element("section", "panel");
+    panel.append(element("div", "panel-header", title));
+    const body = element("div", "panel-body");
+    const table = element("table", "data-table");
+    const tbody = element("tbody");
+    for (const [label, amount] of rows) {
+      const row = element("tr");
+      row.append(element("th", "", label), element("td", "", formatCOP(amount)));
+      tbody.append(row);
+    }
+    table.append(tbody);
+    body.append(table);
+    panel.append(body);
+    modal.append(panel);
+  }
+  const notes = element("div", "notice");
+  notes.textContent = "Liquidación ordinaria 2026. Verifica novedades, afiliaciones, topes y tarifas con la PILA y el operador de nómina; la retención en la fuente se captura manualmente.";
+  modal.append(notes);
+  modalRoot.append(modal);
 }
 
 function displayValue(value, type) {
@@ -868,9 +948,301 @@ async function openPlatformForm(entity, record = null) {
   form.querySelector("input, select, textarea")?.focus();
 }
 
+async function getWorkflowFields(workflow) {
+  const date = { name: "date", label: "Fecha", type: "date", required: true, defaultValue: new Date().toISOString().slice(0, 10) };
+  const method = { name: "paymentMethod", label: "Medio de pago", type: "select", options: ["Efectivo", "Transferencia", "Tarjeta", "Otro"], required: true };
+  const text = (name, label, required = true) => ({ name, label, type: "text", required });
+  const number = (name, label, required = true) => ({ name, label, type: "number", min: 0, step: 0.01, required });
+  const select = (name, label, items, getLabel, required = true) => ({
+    name, label, type: "select", required,
+    options: items.map((item) => ({ value: item.id, label: getLabel(item) }))
+  });
+  if (workflow === "sale") {
+    const [items, customers] = await Promise.all([getRecords("inventory"), getRecords("customers")]);
+    return [date, select("productId", "Producto", items.filter((item) => Number(item.quantity) > 0), (item) => `${item.name} · ${item.quantity} disponibles · ${formatNumber(item.price)}`),
+      select("customerId", "Cliente (opcional)", customers, (item) => item.name, false),
+      number("quantity", "Cantidad"), number("paidAmount", "Valor recibido", false),
+      { name: "dueDate", label: "Vencimiento del saldo", type: "date" }, method];
+  }
+  if (workflow === "purchase") {
+    const [items, suppliers] = await Promise.all([getRecords(), getRecords("suppliers")]);
+    const itemSelector = {
+      name: "itemId", label: "Artículo comprado", type: "select", required: true,
+      options: [
+        ...items.filter((item) => ["inventory", "raw-materials"].includes(item.module)).map((item) => ({
+          value: item.id,
+          label: `${item.name} · ${item.quantity} ${item.unit || "unidades"} · costo ${formatNumber(item.cost)}`,
+          cost: item.cost
+        })),
+        { value: "__new__", label: "Crear artículo nuevo…" }
+      ]
+    };
+    return [date, itemSelector,
+      { name: "newItemModule", label: "Tipo de artículo", type: "select", options: [
+        { value: "inventory", label: "Producto para vender" }, { value: "raw-materials", label: "Materia prima" }
+      ] },
+      text("newItemName", "Nombre del artículo"), text("newItemCode", "Código / referencia", false),
+      text("newItemCategory", "Categoría", false), text("newItemUnit", "Unidad", false),
+      number("newItemPrice", "Precio de venta", false), number("newItemMinimum", "Existencia mínima", false),
+      select("supplierId", "Proveedor", suppliers, (item) => item.name),
+      number("quantity", "Cantidad"), number("unitCost", "Costo por unidad"), number("paidAmount", "Valor pagado", false),
+      { name: "dueDate", label: "Vencimiento del saldo", type: "date" }, method];
+  }
+  if (workflow === "appointment") {
+    const [customers, services, employees] = await Promise.all([
+      getRecords("customers"), getRecords("services"), getRecords("employees")
+    ]);
+    return [date, { name: "time", label: "Hora", type: "time", required: true },
+      select("customerId", "Cliente", customers, (item) => item.name),
+      select("serviceId", "Servicio", services, (item) => `${item.name} · ${item.durationMinutes} min · ${formatNumber(item.price)}`),
+      select("employeeId", "Profesional (opcional)", employees.filter((item) => item.status !== "Inactivo"), (item) => item.name, false),
+      text("notes", "Notas", false)];
+  }
+  if (workflow === "service-sale") {
+    const [customers, services, employees] = await Promise.all([
+      getRecords("customers"), getRecords("services"), getRecords("employees")
+    ]);
+    return [date,
+      select("serviceId", "Servicio prestado", services, (item) => `${item.name} · ${formatNumber(item.price)}`),
+      select("customerId", "Cliente (opcional)", customers, (item) => item.name, false),
+      select("employeeId", "Profesional", employees.filter((item) => item.status !== "Inactivo"), (item) => item.name, false),
+      number("paidAmount", "Valor recibido", false),
+      { name: "dueDate", label: "Vencimiento del saldo", type: "date" }, method];
+  }
+  if (workflow === "expense") return [date, text("category", "Categoría"), text("detail", "Descripción"), number("amount", "Valor"),
+    { name: "status", label: "Estado", type: "select", options: ["Pagado", "Pendiente"], required: true }, method];
+  if (workflow === "payroll") {
+    const employees = await getRecords("employees");
+    return [date, select("employeeId", "Empleado", employees.filter((item) => item.status !== "Inactivo"),
+      (item) => `${item.name} · salario ${formatNumber(item.salary)} · ARL ${item.arlRate ?? 0.522}%`),
+      { name: "period", label: "Periodo de nómina", type: "month", required: true, defaultValue: new Date().toISOString().slice(0, 7) },
+      { name: "daysWorked", label: "Días laborados", type: "number", min: 1, max: 30, step: 1, defaultValue: 30, required: true },
+      number("nightHours", "Horas nocturnas ordinarias", false),
+      number("overtimeDayHours", "Horas extra diurnas", false),
+      number("overtimeNightHours", "Horas extra nocturnas", false),
+      number("restDayDayHours", "Horas en día de descanso (diurnas)", false),
+      number("restDayNightHours", "Horas en día de descanso (nocturnas)", false),
+      number("overtimeRestDayDayHours", "Horas extra diurnas en descanso", false),
+      number("overtimeRestDayNightHours", "Horas extra nocturnas en descanso", false),
+      number("additionalSalary", "Otros devengados salariales", false),
+      number("otherDeductions", "Otras deducciones autorizadas", false),
+      number("incomeTaxWithholding", "Retención en la fuente (valor calculado externamente)", false),
+      { name: "status", label: "Pago al trabajador", type: "select", options: ["Pagado", "Pendiente"], required: true }, method];
+  }
+  if (workflow === "production") {
+    const [materials, products] = await Promise.all([getRecords("raw-materials"), getRecords("inventory")]);
+    return [date, text("detail", "Detalle"), select("materialId", "Materia prima", materials, (item) => `${item.name} · ${item.quantity} ${item.unit || "unidades"}`),
+      number("inputQuantity", "Cantidad consumida"), select("productId", "Producto terminado", products, (item) => item.name), number("outputQuantity", "Cantidad producida")];
+  }
+  if (workflow === "receivable-payment") {
+    const accounts = (await getRecords("receivables")).filter((item) => Number(item.outstandingAmount ?? item.amount) > 0);
+    return [date, select("receivableId", "Cuenta por cobrar", accounts,
+      (item) => `${item.customer} · ${item.detail} · saldo ${formatNumber(item.outstandingAmount ?? item.amount)}`),
+      number("amount", "Valor del abono"), method];
+  }
+  if (workflow === "payable-payment") {
+    const accounts = (await getRecords("payables")).filter((item) => Number(item.outstandingAmount ?? item.amount) > 0);
+    return [date, select("payableId", "Cuenta por pagar", accounts,
+      (item) => `${item.supplier} · ${item.detail} · saldo ${formatNumber(item.outstandingAmount ?? item.amount)}`),
+      number("amount", "Valor del abono"), method];
+  }
+  return [];
+}
+
+async function openWorkflowForm(module) {
+  try {
+    const fields = await getWorkflowFields(module.workflow);
+    if (!fields.length) throw new Error("No se encontró el formulario para esta operación.");
+    const payrollEmployees = module.workflow === "payroll" ? await getRecords("employees") : [];
+    modalRoot.replaceChildren();
+    const modal = element("section", "modal");
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-modal", "true");
+    const header = element("div", "modal-header");
+    const title = element("h2", "", `Registrar ${module.label.toLowerCase()}`);
+    title.id = "record-modal-title";
+    const close = element("button", "modal-close", "×");
+    close.type = "button";
+    close.setAttribute("aria-label", "Cerrar");
+    close.addEventListener("click", () => modalRoot.replaceChildren());
+    header.append(title, close);
+    const form = element("form", "modal-form");
+    const grid = element("div", "form-grid");
+    const workflowControls = new Map();
+    for (const field of fields) {
+      const wrapper = addFormField(field, field.defaultValue || "", field.options || []);
+      if (field.name.startsWith("newItem")) wrapper.hidden = true;
+      workflowControls.set(field.name, wrapper.querySelector("input, select, textarea"));
+      grid.append(wrapper);
+    }
+    if (module.workflow === "purchase") {
+      const itemSelect = workflowControls.get("itemId");
+      const purchaseItemField = fields.find((field) => field.name === "itemId");
+      const newItemFields = ["newItemModule", "newItemName", "newItemCode", "newItemCategory", "newItemUnit", "newItemPrice", "newItemMinimum"];
+      const updatePurchaseItemFields = () => {
+        const creating = itemSelect.value === "__new__";
+        for (const name of newItemFields) {
+          const control = workflowControls.get(name);
+          control.closest(".field").hidden = !creating;
+          control.required = creating && ["newItemModule", "newItemName"].includes(name);
+        }
+        workflowControls.get("newItemPrice").required = creating && workflowControls.get("newItemModule").value === "inventory";
+      };
+      itemSelect.addEventListener("change", updatePurchaseItemFields);
+      workflowControls.get("newItemModule").addEventListener("change", updatePurchaseItemFields);
+      itemSelect.addEventListener("change", () => {
+        const selected = purchaseItemField.options.find((item) => item.value === itemSelect.value);
+        workflowControls.get("unitCost").value = selected?.value !== "__new__" ? selected?.cost ?? "" : "";
+      });
+      updatePurchaseItemFields();
+    }
+    const workflowNotice = element("div", "notice", module.workflow === "payroll"
+      ? "Liquidación ordinaria colombiana configurada para 2026. La retención en la fuente se ingresa manualmente; el sistema no genera PILA ni reemplaza su revisión contable/laboral."
+      : "Los cambios relacionados de caja, cartera y stock se aplican como una sola operación.");
+    if (module.workflow === "sale") {
+      const productSelect = workflowControls.get("productId");
+      const quantityInput = workflowControls.get("quantity");
+      const itemField = fields.find((field) => field.name === "productId");
+      const updateSalePreview = async () => {
+        const selected = itemField.options.find((item) => item.value === productSelect.value);
+        if (!selected) {
+          workflowNotice.textContent = "Selecciona un producto para ver precio, existencias y total estimado.";
+          quantityInput.removeAttribute("max");
+          return;
+        }
+        const products = await getRecords("inventory");
+        const current = products.find((entry) => entry.id === productSelect.value);
+        if (!current) return;
+        const qty = Number(quantityInput.value) || 0;
+        workflowNotice.textContent = `${current.name}: ${formatNumber(current.price)} por unidad · ${formatNumber(current.quantity)} disponibles · total estimado: ${formatNumber(qty * Number(current.price || 0))}.`;
+        quantityInput.max = String(current.quantity);
+      };
+      productSelect.addEventListener("change", updateSalePreview);
+      quantityInput.addEventListener("input", updateSalePreview);
+    }
+    if (module.workflow === "payroll") {
+      const updatePayrollPreview = () => {
+        const data = new FormData(form);
+        const values = Object.fromEntries(fields.map((field) => {
+          const value = data.get(field.name);
+          return [field.name, field.type === "number" && value !== "" ? Number(value) : value || ""];
+        }));
+        const employee = payrollEmployees.find((item) => item.id === values.employeeId);
+        if (!employee) {
+          workflowNotice.textContent = "Selecciona un empleado con salario pactado para ver el estimado de nómina.";
+          return;
+        }
+        try {
+          const result = calculateColombianPayroll({ ...values, employee });
+          workflowNotice.textContent = `Estimado ${values.period}: bruto ${formatNumber(result.grossPay)} · deducciones ${formatNumber(result.totalDeductions)} · neto ${formatNumber(result.netPay)} · costo total empresa ${formatNumber(result.totalEmployerCost)}. Exoneración patronal ${result.employerExonerated ? "aplicada" : "no aplicada"}.${result.minimumWageWarning ? " ADVERTENCIA: el salario está por debajo del mínimo proporcional configurado." : ""}`;
+        } catch (error) {
+          workflowNotice.textContent = error.message;
+        }
+      };
+      grid.addEventListener("input", updatePayrollPreview);
+      grid.addEventListener("change", updatePayrollPreview);
+    }
+    form.append(grid, workflowNotice);
+    const actions = element("div", "form-actions");
+    actions.append(addButton("Cancelar", "button-secondary", () => modalRoot.replaceChildren()));
+    const save = element("button", "button button-primary", "Guardar operación");
+    save.type = "submit";
+    actions.append(save);
+    form.append(actions);
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!form.reportValidity()) return;
+      save.disabled = true;
+      try {
+        const data = new FormData(form);
+        const values = Object.fromEntries(fields.map((field) => {
+          const value = data.get(field.name);
+          return [field.name, field.type === "number" && value !== "" ? Number(value) : value || ""];
+        }));
+        let transaction;
+        if (module.workflow === "sale") {
+          const [items, customers] = await Promise.all([getRecords("inventory"), getRecords("customers")]);
+          const item = items.find((entry) => entry.id === values.productId);
+          const customer = customers.find((entry) => entry.id === values.customerId);
+          transaction = buildSaleTransaction({ product: item, customer: customer?.name, customerId: customer?.id,
+            quantity: values.quantity, unitPrice: item?.price, paidAmount: values.paidAmount,
+            dueDate: values.dueDate, paymentMethod: values.paymentMethod, date: values.date });
+        } else if (module.workflow === "purchase") {
+          const [items, suppliers] = await Promise.all([getRecords(), getRecords("suppliers")]);
+          const supplier = suppliers.find((entry) => entry.id === values.supplierId);
+          let item = items.find((entry) => entry.id === values.itemId);
+          if (values.itemId === "__new__") {
+            if (values.newItemModule === "inventory" && !(Number(values.newItemPrice) > 0)) {
+              throw new Error("Indica un precio de venta mayor que cero para el nuevo producto.");
+            }
+            const timestamp = new Date().toISOString();
+            item = {
+              id: crypto.randomUUID(), module: values.newItemModule, name: values.newItemName.trim(),
+              code: values.newItemCode, category: values.newItemCategory, unit: values.newItemUnit || "unidades",
+              quantity: 0, cost: 0, price: Number(values.newItemPrice) || 0, minimum: Number(values.newItemMinimum) || 0,
+              createdAt: timestamp, updatedAt: timestamp
+            };
+          }
+          transaction = buildPurchaseTransaction({ item,
+            supplier: supplier?.name, supplierId: supplier?.id, quantity: values.quantity, unitCost: values.unitCost,
+            paidAmount: values.paidAmount, dueDate: values.dueDate, paymentMethod: values.paymentMethod, date: values.date });
+          if (values.itemId === "__new__") transaction.records.unshift(item);
+        } else if (module.workflow === "service-sale") {
+          const [customers, services, employees] = await Promise.all([
+            getRecords("customers"), getRecords("services"), getRecords("employees")
+          ]);
+          transaction = buildServiceSaleTransaction({
+            ...values,
+            service: services.find((entry) => entry.id === values.serviceId),
+            customer: customers.find((entry) => entry.id === values.customerId),
+            employee: employees.find((entry) => entry.id === values.employeeId)
+          });
+        } else if (module.workflow === "expense") transaction = buildExpenseTransaction(values);
+        else if (module.workflow === "payroll") {
+          const [employees, payrolls] = await Promise.all([getRecords("employees"), getRecords("payroll")]);
+          if (payrolls.some((entry) => entry.employeeId === values.employeeId
+              && entry.period === values.period && entry.status !== "Anulado")) {
+            throw new Error("Ya existe una liquidación para este empleado y periodo. Revisa el desprendible antes de crear otra.");
+          }
+          transaction = buildPayrollTransaction({ ...values, employee: employees.find((entry) => entry.id === values.employeeId) });
+        } else if (module.workflow === "production") {
+          const [materials, products] = await Promise.all([getRecords("raw-materials"), getRecords("inventory")]);
+          transaction = buildProductionTransaction({ ...values,
+            material: materials.find((entry) => entry.id === values.materialId),
+            product: products.find((entry) => entry.id === values.productId) });
+        } else if (module.workflow === "receivable-payment") {
+          const accounts = await getRecords("receivables");
+          transaction = buildReceivablePaymentTransaction({ receivable: accounts.find((entry) => entry.id === values.receivableId),
+            amount: values.amount, date: values.date, method: values.paymentMethod });
+        } else if (module.workflow === "payable-payment") {
+          const accounts = await getRecords("payables");
+          transaction = buildPayablePaymentTransaction({ payable: accounts.find((entry) => entry.id === values.payableId),
+            amount: values.amount, date: values.date, method: values.paymentMethod });
+        }
+        await saveFinancialTransaction(transaction);
+        modalRoot.replaceChildren();
+        showToast("Operación aplicada: caja, cartera e inventario quedaron sincronizados.");
+        await renderPage();
+      } catch (error) {
+        showError(error);
+        save.disabled = false;
+      }
+    });
+    modal.append(header, form);
+    modalRoot.append(modal);
+    form.querySelector("input, select, textarea")?.focus();
+  } catch (error) {
+    showError(error);
+  }
+}
+
 function openRecordForm(moduleId, record = null) {
   const module = findModule(moduleId);
   if (!module?.fields) return;
+  if (module.workflow && !record) {
+    openWorkflowForm(module);
+    return;
+  }
   modalRoot.replaceChildren();
   const modal = element("section", "modal");
   modal.setAttribute("role", "dialog");
@@ -886,7 +1258,7 @@ function openRecordForm(moduleId, record = null) {
   header.append(close);
   const form = element("form", "modal-form");
   const grid = element("div", "form-grid");
-  for (const field of module.fields) grid.append(addFormField(field, record?.[field.name]));
+  for (const field of module.fields) grid.append(addFormField(field, record?.[field.name] ?? field.defaultValue ?? ""));
   form.append(grid);
   const actions = element("div", "form-actions");
   const cancel = addButton("Cancelar", "button-secondary", () => modalRoot.replaceChildren());

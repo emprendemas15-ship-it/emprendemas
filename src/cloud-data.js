@@ -9,6 +9,9 @@ function requireCompany() {
 }
 
 function databaseError(error, fallback) {
+  if (error?.code === "PGRST202") {
+    return new Error("El servidor aún no tiene la migración de operaciones financieras. Aplica 202611060001_linked_financial_transactions.sql en Supabase y vuelve a intentarlo.");
+  }
   if (error?.code === "42501" || error?.code === "PGRST301") {
     return new Error("El servidor rechazó este acceso. Verifica tu empresa, rol y permisos.");
   }
@@ -76,6 +79,35 @@ export async function saveRecord(moduleId, values, existingId) {
   if (error) throw databaseError(error, "No fue posible guardar el registro.");
   await snapshotCompany();
   return mapBusinessRecord(record);
+}
+
+export async function saveFinancialTransaction(transaction) {
+  const companyId = requireCompany();
+  if (!transaction || !Array.isArray(transaction.records) || transaction.records.length === 0 ||
+      !Array.isArray(transaction.stockAdjustments)) {
+    throw new Error("La operación financiera no contiene registros válidos.");
+  }
+  const rootRecord = transaction.records.find((record) =>
+    ["sales", "purchases", "expenses", "payroll", "production", "receivable-payments", "payable-payments"].includes(record.module)
+  ) || transaction.records[0];
+  const rootTransactionId = rootRecord.id;
+  const records = transaction.records.map((record) => ({
+    id: record.id,
+    module: record.module,
+    payload: Object.fromEntries(
+      Object.entries({ ...record, linkedTransactionId: rootTransactionId })
+        .filter(([key]) => !["id", "module", "createdAt", "updatedAt"].includes(key))
+    ),
+    created_at: record.createdAt,
+    updated_at: record.updatedAt
+  }));
+  const { error } = await getSupabase().rpc("apply_financial_transaction", {
+    p_records: records,
+    p_stock_adjustments: transaction.stockAdjustments
+  });
+  if (error) throw databaseError(error, "No fue posible aplicar la operación financiera.");
+  await snapshotCompany();
+  return { companyId, records: transaction.records };
 }
 
 export async function deleteRecord(id) {

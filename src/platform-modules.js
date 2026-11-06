@@ -1,3 +1,5 @@
+import { businessCategories } from "./business-categories.js";
+
 export const platformModules = [
   { id: "platform-dashboard", label: "Panel principal", icon: "⌂", group: "PLATAFORMA" },
   { id: "platform-companies", label: "Empresas registradas", icon: "▣", group: "EMPRESAS" },
@@ -14,7 +16,7 @@ export const platformModules = [
 
 export const platformCompanyFields = [
   { name: "name", label: "Nombre comercial", type: "text", required: true },
-  { name: "activity", label: "Actividad comercial", type: "select", options: ["Papelería", "Accesorios para el hogar", "Restaurante de comidas rápidas", "Otro"], required: true },
+  { name: "activity", label: "Tipo de negocio", type: "select", options: businessCategories.map((category) => category.label), required: true },
   { name: "ownerName", label: "Propietario", type: "text", required: true },
   { name: "contactEmail", label: "Correo de contacto", type: "email" },
   { name: "contactPhone", label: "Teléfono de contacto", type: "tel" },
@@ -32,7 +34,7 @@ export const platformUserFields = [
 
 export const platformRequestFields = [
   { name: "companyName", label: "Nombre comercial propuesto", type: "text", required: true },
-  { name: "activity", label: "Actividad comercial", type: "select", options: ["Papelería", "Accesorios para el hogar", "Restaurante de comidas rápidas", "Otro"], required: true },
+  { name: "activity", label: "Tipo de negocio", type: "select", options: businessCategories.map((category) => category.label), required: true },
   { name: "ownerName", label: "Propietario solicitante", type: "text", required: true },
   { name: "contactEmail", label: "Correo de contacto", type: "email" },
   { name: "requestedAt", label: "Fecha de solicitud", type: "date", required: true },
