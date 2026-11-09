@@ -437,18 +437,24 @@ async function renderPlatformDirectory(module) {
     .map((company) => [company.id, company.name]));
   const paint = () => {
     const query = search.value.trim().toLocaleLowerCase();
-    const filtered = rows.filter((entry) => fieldDefinitions.some((field) => {
+    const searchableFields = module.id === "platform-active-companies"
+      ? [...fieldDefinitions, { name: "ownerEmail" }]
+      : fieldDefinitions;
+    const filtered = rows.filter((entry) => searchableFields.some((field) => {
       const value = field.name === "companyId" ? companyMap.get(entry.companyId) : entry[field.name];
       return String(value ?? "").toLocaleLowerCase().includes(query);
     }));
-    renderPlatformTable(tableContainer, filtered, entity, true, fieldDefinitions, companyMap);
+    renderPlatformTable(
+      tableContainer, filtered, entity, true, fieldDefinitions, companyMap,
+      module.id === "platform-active-companies"
+    );
     count.textContent = `${filtered.length} ${filtered.length === 1 ? "registro" : "registros"}`;
   };
   search.addEventListener("input", paint);
   paint();
 }
 
-function renderPlatformTable(container, rows, entity, withActions, fields, companyMap = new Map()) {
+function renderPlatformTable(container, rows, entity, withActions, fields, companyMap = new Map(), showOwnerEmail = false) {
   container.replaceChildren();
   if (!rows.length) {
     container.append(emptyState("Sin registros", "Todavía no hay datos disponibles para esta vista."));
@@ -457,7 +463,7 @@ function renderPlatformTable(container, rows, entity, withActions, fields, compa
   const definitions = fields || (entity === "companies" ? platformCompanyFields
     : entity === "users" ? platformUserFields : platformRequestFields);
   const columns = entity === "companies"
-    ? ["name", "activity", "ownerName", "registeredAt", "status"]
+    ? ["name", ...(showOwnerEmail ? ["ownerEmail"] : []), "activity", "ownerName", "registeredAt", "status"]
     : entity === "users"
       ? ["name", "email", "companyId", "role", "status"]
       : ["companyName", "activity", "ownerName", "requestedAt", "status"];
@@ -469,7 +475,7 @@ function renderPlatformTable(container, rows, entity, withActions, fields, compa
   const headRow = element("tr");
   for (const name of columns) {
     const field = definitions.find((definition) => definition.name === name);
-    headRow.append(element("th", "", field?.label || name));
+    headRow.append(element("th", "", name === "ownerEmail" ? "Correo de acceso" : field?.label || name));
   }
   if (hasActions) headRow.append(element("th", "", "Acciones"));
   head.append(headRow);

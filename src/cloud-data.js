@@ -200,11 +200,18 @@ export async function getPlatformRecords(storeName) {
       .select("id,name,activity,owner_name,contact_email,contact_phone,created_at,status")
       .order("created_at", { ascending: false });
     if (error) throw databaseError(error, "No fue posible consultar las empresas.");
+    const { data: owners, error: ownersError } = await supabase.from("profiles")
+      .select("company_id,email")
+      .eq("role", "owner")
+      .not("company_id", "is", null);
+    if (ownersError) throw databaseError(ownersError, "No fue posible consultar los correos de acceso de las empresas.");
+    const ownerEmails = new Map(owners.map((owner) => [owner.company_id, owner.email]));
     return data.map((company) => ({
       id: company.id,
       name: company.name,
       activity: company.activity,
       ownerName: company.owner_name,
+      ownerEmail: ownerEmails.get(company.id) || "",
       contactEmail: company.contact_email,
       contactPhone: company.contact_phone,
       registeredAt: company.created_at.slice(0, 10),
