@@ -52,7 +52,7 @@ export function getBusinessCategory(activity) {
   const value = normalize(activity);
   return businessCategories.find((category) =>
     category.aliases.some((alias) => normalize(alias) === value)
-  ) || businessCategories.find((category) => category.id === "retail");
+  ) || businessCategories.find((category) => category.id === "home-store");
 }
 
 export function getBusinessModules(activity, allModules) {

@@ -11,6 +11,8 @@ test("las actividades antiguas se asignan a su categoría sin perder acceso", ()
   assert.equal(getBusinessCategory("Accesorios para el hogar").id, "home-store");
   assert.equal(getBusinessCategory("Papelería").id, "stationery");
   assert.equal(getBusinessCategory("Restaurante de comidas rápidas").id, "restaurant");
+  assert.equal(getBusinessCategory("Otro").id, "home-store");
+  assert.equal(getBusinessCategory("Actividad desconocida").id, "home-store");
 });
 
 test("solo restaurante ve materias primas y producción", () => {

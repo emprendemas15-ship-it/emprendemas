@@ -9,6 +9,9 @@ function requireCompany() {
 }
 
 function databaseError(error, fallback) {
+  if (error?.message?.includes("platform_requests.auth_user_id does not exist")) {
+    return new Error("Falta aplicar la migración 202610310002_registration_approval_and_user_access.sql en Supabase. Ejecútala en el SQL Editor y vuelve a intentar.");
+  }
   if (error?.code === "PGRST202") {
     return new Error("El servidor aún no tiene la migración de operaciones financieras. Aplica 202611060001_linked_financial_transactions.sql en Supabase y vuelve a intentarlo.");
   }
