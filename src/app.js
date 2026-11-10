@@ -6,7 +6,7 @@ import {
   platformCompanyFields, platformModules, platformRequestFields, platformUserFields
 } from "./platform-modules.js";
 import {
-  deleteRecord, getPlatformRecords, getPlatformSetting, getRecords, getSetting,
+  deleteModuleData, getPlatformRecords, getPlatformSetting, getRecords, getSetting, previewModuleDataDeletion,
   reviewPlatformRequest, saveFinancialTransaction, savePlatformRecord, savePlatformSetting,
   saveRecord, saveSetting, setCloudIdentity
 } from "./cloud-data.js";
@@ -15,6 +15,7 @@ import {
   buildPurchaseTransaction, buildPayablePaymentTransaction,
   buildReceivablePaymentTransaction, buildSaleTransaction, buildServiceSaleTransaction
 } from "./financial-ledger.js";
+import { deleteBackups } from "./db.js";
 import { downloadBackup, getBackups, restoreBackupFile } from "./backup.js";
 import { isBackendConfigured, loadIdentity, registerBusiness, signIn, signOut } from "./supabase.js";
 
@@ -680,7 +681,19 @@ function emptyState(title, message) {
 }
 
 async function renderRecords(module) {
-  pageHeading(module.label, module.description, addButton("+ Agregar registro", "button-primary", () => openRecordForm(module.id)));
+  const records = module.id === "service-sales"
+    ? (await getRecords("sales")).filter((record) => record.serviceId)
+    : await getRecords(module.id);
+  const canManage = ["owner", "administrator"].includes(currentIdentity?.profile?.role);
+  const headingActions = element("div", "page-actions");
+  headingActions.append(addButton("+ Agregar registro", "button-primary", () => openRecordForm(module.id)));
+  if (canManage) {
+    const clearButton = addButton(`Eliminar datos (${records.length})`, "button-danger", () => clearModuleRecords(module.id));
+    clearButton.disabled = records.length === 0;
+    clearButton.title = records.length ? "Elimina los registros del mÃ³dulo y sus operaciones enlazadas" : "No hay datos para eliminar";
+    headingActions.append(clearButton);
+  }
+  pageHeading(module.label, module.description, headingActions);
   if (module.id === "users") {
     const note = element("div", "notice warning");
     note.textContent = "Este módulo solo conserva un directorio de usuarios y permisos previstos. No crea cuentas con inicio de sesión ni protege los datos frente a otras personas que puedan abrir este perfil del navegador.";
@@ -700,7 +713,6 @@ async function renderRecords(module) {
   const count = element("div", "result-count");
   page.append(count);
 
-  const records = await getRecords(module.id);
   const paint = () => {
     const query = search.value.trim().toLocaleLowerCase();
     const filtered = records.filter((record) =>
@@ -726,9 +738,13 @@ async function renderRecords(module) {
     for (const record of filtered) {
       const row = element("tr");
       for (const field of columns) {
-        row.append(element("td", "", displayValue(record[field.name], field.type)));
+        const value = field.name === "service" ? record.serviceName : record[field.name];
+        row.append(element("td", "", displayValue(value, field.type)));
       }
       const actions = element("td");
+      if (canManage && record.linkedTransactionId) {
+        actions.append(addButton("Eliminar operación", "button-danger", () => removeRecord(module.id, record.id)));
+      }
       if (module.id === "payroll") {
         actions.append(addButton("Ver desprendible", "button-secondary", () => openPayrollDetail(record)));
       } else if (record.linkedTransactionId) {
@@ -1302,18 +1318,42 @@ function closeOnBackdrop(event) {
 }
 
 async function removeRecord(moduleId, id) {
-  if (!window.confirm("¿Eliminar este registro? Esta acción no se puede deshacer desde la lista.")) return;
   try {
-    const records = await getRecords(moduleId);
-    if (!records.some((record) => record.id === id)) throw new Error("No se encontró el registro que intentas eliminar.");
-    await deleteRecord(id);
-    showToast("Registro eliminado y copia interna actualizada.");
+    const preview = await previewModuleDataDeletion(moduleId, id);
+    if (!preview.removedCount) throw new Error("No se encontró el registro que intentas eliminar.");
+    const affected = preview.affectedModules.map((item) => findModule(item)?.label || item).join(", ");
+    if (!window.confirm(`¿Eliminar esta operación? Se eliminarán ${preview.removedCount} registros de: ${affected}. Se guardará una copia previa y se ajustarán los saldos e inventario.`)) return;
+    const result = await deleteModuleData(moduleId, id);
+    if (!result.removedCount) throw new Error("No se encontró el registro que intentas eliminar.");
+    showToast(`Se eliminaron ${result.removedCount} registros relacionados y se guardó una copia previa.`);
     await renderPage();
   } catch (error) {
     showError(error);
   }
 }
 
+async function clearModuleRecords(moduleId) {
+  const module = currentModule(moduleId);
+  if (!module) return;
+  try {
+    const preview = await previewModuleDataDeletion(moduleId);
+    if (!preview.removedCount) {
+      showToast("No hay datos para eliminar.");
+      return;
+    }
+    const affected = preview.affectedModules.map((item) => findModule(item)?.label || item).join(", ");
+    if (!window.confirm(`¿Eliminar todos los datos de «${module.label}»? Se eliminarán ${preview.removedCount} registros de: ${affected}. Se guardará una copia previa y se ajustarán los saldos e inventario.`)) return;
+    const result = await deleteModuleData(moduleId);
+    if (!result.removedCount) {
+      showToast("No hay datos para eliminar.");
+      return;
+    }
+    showToast(`Se eliminaron ${result.removedCount} registros. Módulos afectados: ${affected}.`);
+    await renderPage();
+  } catch (error) {
+    showError(error);
+  }
+}
 async function decideRegistration(request, decision) {
   const action = decision === "approved" ? "aprobar" : "rechazar";
   if (!window.confirm(`¿Confirmas ${action} la solicitud de ${request.ownerName} para ${request.companyName}?`)) return;
@@ -1351,8 +1391,21 @@ async function renderReports() {
 }
 
 async function renderSettings() {
-  pageHeading("Configuración del negocio", "Información general guardada únicamente en este perfil de navegador.");
   const profile = await getSetting("businessProfile") || {};
+  const headingActions = element("div", "page-actions");
+  if (["owner", "administrator"].includes(currentIdentity?.profile?.role)) {
+    headingActions.append(addButton("Eliminar configuración", "button-danger", async () => {
+      if (!window.confirm("¿Eliminar la configuración del negocio? Se limpiarán el nombre y los datos de contacto guardados.")) return;
+      try {
+        await saveSetting("businessProfile", {});
+        showToast("Configuración eliminada.");
+        await renderSettings();
+      } catch (error) {
+        showError(error);
+      }
+    }));
+  }
+  pageHeading("Configuración del negocio", "Información general guardada únicamente en este perfil de navegador.", headingActions);
   const card = element("form", "form-card");
   const grid = element("div", "form-grid");
   const fields = [
@@ -1427,6 +1480,21 @@ async function renderBackups() {
   title.style.cssText = "margin:24px 0 4px;color:#102b46;font-size:13px";
   body.append(title, element("p", "permission-note", "Se conserva un máximo de 10 estados recientes en IndexedDB. La copia previa a una restauración también se guarda internamente."));
   const backups = await getBackups(currentIdentity.company.id);
+  if (["owner", "administrator"].includes(currentIdentity?.profile?.role)) {
+    const clearBackups = addButton("Eliminar copias internas", "button-danger", async () => {
+      if (!window.confirm("¿Eliminar todas las copias internas guardadas en este dispositivo para esta empresa? Las copias externas descargadas no se afectan.")) return;
+      try {
+        await deleteBackups(currentIdentity.company.id);
+        showToast("Copias internas eliminadas.");
+        await renderBackups();
+      } catch (error) {
+        showError(error);
+      }
+    });
+    clearBackups.disabled = backups.length === 0;
+    clearBackups.title = backups.length ? "Elimina las copias internas locales de esta empresa" : "No hay copias internas";
+    actionRow.append(clearBackups);
+  }
   if (!backups.length) {
     body.append(emptyState("Aún no hay copias internas", "Se crearán después de guardar o modificar datos."));
   } else {

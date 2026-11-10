@@ -266,6 +266,21 @@ export async function getBackups(companyId) {
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
+export async function deleteBackups(companyId) {
+  if (typeof companyId !== "string" || !companyId) {
+    throw new Error("No se pueden eliminar copias sin una empresa activa.");
+  }
+  const database = await openDatabase();
+  const transaction = database.transaction("backups", "readwrite");
+  const store = transaction.objectStore("backups");
+  const done = transactionDone(transaction);
+  const backups = await requestResult(store.getAll());
+  for (const backup of backups) {
+    if (backup.companyId === companyId) store.delete(backup.id);
+  }
+  await done;
+}
+
 export async function replaceLocalData(records, settings) {
   await createAutomaticBackup();
   const database = await openDatabase();

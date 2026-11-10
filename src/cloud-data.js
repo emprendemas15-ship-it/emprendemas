@@ -125,6 +125,182 @@ export async function deleteRecord(id) {
   await snapshotCompany();
 }
 
+const transactionRootModules = new Set(["sales", "purchases", "expenses", "payroll", "production"]);
+const paymentModules = new Set(["receivable-payments", "payable-payments"]);
+
+function deletionModuleRecords(records, moduleId) {
+  if (moduleId === "service-sales") {
+    return records.filter((record) => record.module === "sales" && record.serviceId);
+  }
+  return records.filter((record) => record.module === moduleId);
+}
+
+function buildModuleDeletionPlan(records, moduleId, recordId) {
+  const byId = new Map(records.map((record) => [record.id, record]));
+  const selected = deletionModuleRecords(records, moduleId)
+    .filter((record) => !recordId || record.id === recordId);
+  if (!selected.length) return { records: [], removedCount: 0, affectedModules: [] };
+
+  const removeIds = new Set(selected.map((record) => record.id));
+  const rootQueue = [];
+  const queuedRoots = new Set();
+  const deletedAccountIds = new Set();
+  const paymentRootsToRestore = new Set();
+
+  const enqueueRoot = (id) => {
+    if (!id || queuedRoots.has(id)) return;
+    queuedRoots.add(id);
+    rootQueue.push(id);
+  };
+
+  for (const record of selected) {
+    if (record.linkedTransactionId) enqueueRoot(record.linkedTransactionId);
+    if (transactionRootModules.has(record.module)) enqueueRoot(record.id);
+    if (moduleId === "receivable-payments" || moduleId === "payable-payments") {
+      enqueueRoot(record.linkedTransactionId || record.id);
+    }
+    if (moduleId === "money-movements") {
+      if (transactionRootModules.has(record.relatedModule)) enqueueRoot(record.relatedId);
+      if (record.linkedTransactionId) enqueueRoot(record.linkedTransactionId);
+    }
+    if (moduleId === "receivables") {
+      deletedAccountIds.add(record.id);
+      if (record.saleId) enqueueRoot(record.saleId);
+    }
+    if (moduleId === "payables") {
+      deletedAccountIds.add(record.id);
+      if (record.purchaseId) enqueueRoot(record.purchaseId);
+      if (record.payrollId) enqueueRoot(record.payrollId);
+    }
+  }
+
+  if (moduleId === "inventory" || moduleId === "raw-materials") {
+    const itemIds = new Set(selected.map((record) => record.id));
+    for (const movement of records.filter((record) => record.module === "stock-movements" && itemIds.has(record.itemId))) {
+      enqueueRoot(movement.linkedTransactionId);
+    }
+  }
+
+  if (moduleId === "stock-movements") {
+    for (const movement of selected) enqueueRoot(movement.linkedTransactionId);
+  }
+
+  if (moduleId === "money-movements" || paymentModules.has(moduleId)) {
+    for (const rootId of queuedRoots) {
+      if (paymentModules.has(byId.get(rootId)?.module)) paymentRootsToRestore.add(rootId);
+    }
+  }
+
+  for (let index = 0; index < rootQueue.length; index += 1) {
+    const rootId = rootQueue[index];
+    const root = byId.get(rootId);
+    for (const record of records) {
+      if (record.id === rootId || record.linkedTransactionId === rootId) removeIds.add(record.id);
+    }
+
+    if (root?.module === "sales") {
+      const receivables = records.filter((record) => record.module === "receivables" && record.saleId === rootId);
+      for (const account of receivables) {
+        deletedAccountIds.add(account.id);
+        removeIds.add(account.id);
+      }
+      for (const payment of records.filter((record) => record.module === "receivable-payments" && record.saleId === rootId)) {
+        enqueueRoot(payment.linkedTransactionId || payment.id);
+      }
+    }
+
+    if (root?.module === "purchases") {
+      const payables = records.filter((record) => record.module === "payables" && record.purchaseId === rootId);
+      for (const account of payables) {
+        deletedAccountIds.add(account.id);
+        removeIds.add(account.id);
+      }
+      for (const payment of records.filter((record) => record.module === "payable-payments" && record.purchaseId === rootId)) {
+        enqueueRoot(payment.linkedTransactionId || payment.id);
+      }
+    }
+
+    if (root?.module === "payroll") {
+      for (const account of records.filter((record) => record.module === "payables" && record.payrollId === rootId)) {
+        deletedAccountIds.add(account.id);
+        removeIds.add(account.id);
+      }
+    }
+  }
+
+  const removedPayments = records.filter((record) => removeIds.has(record.id) && paymentModules.has(record.module));
+  const restoredAccounts = new Map();
+  for (const payment of removedPayments) {
+    const accountId = payment.module === "receivable-payments" ? payment.receivableId : payment.payableId;
+    if (!accountId || deletedAccountIds.has(accountId) || !paymentRootsToRestore.has(payment.linkedTransactionId || payment.id)) continue;
+    const current = restoredAccounts.get(accountId) || { amount: 0, module: payment.module === "receivable-payments" ? "receivables" : "payables" };
+    current.amount += Number(payment.amount) || 0;
+    restoredAccounts.set(accountId, current);
+  }
+
+  const remaining = records
+    .filter((record) => !removeIds.has(record.id) || restoredAccounts.has(record.id))
+    .map((record) => {
+      const restore = restoredAccounts.get(record.id);
+      if (!restore) return record;
+      const balance = Math.max(0, (Number(record.outstandingAmount ?? record.amount) || 0) + restore.amount);
+      const paid = Math.max(0, (Number(record.paidAmount) || 0) - restore.amount);
+      const originId = restore.module === "receivables"
+        ? (record.saleId || "")
+        : (record.purchaseId || record.payrollId || "");
+      return {
+        ...record,
+        amount: balance,
+        outstandingAmount: balance,
+        paidAmount: paid,
+        status: balance === 0 ? "Pagada" : "Pendiente",
+        linkedTransactionId: originId,
+        updatedAt: new Date().toISOString()
+      };
+    });
+
+  const deletedItems = new Set(selected
+    .filter((record) => ["inventory", "raw-materials"].includes(record.module))
+    .map((record) => record.id));
+  const stockDeltas = new Map();
+  for (const movement of records.filter((record) => removeIds.has(record.id) && record.module === "stock-movements")) {
+    const signed = (recordDirection(movement.direction) * (Number(movement.quantity) || 0));
+    stockDeltas.set(movement.itemId, (stockDeltas.get(movement.itemId) || 0) + signed);
+  }
+  const adjusted = remaining.map((record) => {
+    const delta = stockDeltas.get(record.id);
+    if (delta === undefined || !["inventory", "raw-materials"].includes(record.module) || deletedItems.has(record.id)) return record;
+    const quantity = (Number(record.quantity) || 0) - delta;
+    if (quantity < 0) {
+      throw new Error(`No se puede vaciar el mÃ³dulo: al retirar esas operaciones, ${record.name} quedarÃ­a con inventario negativo. Elimina primero las ventas que consumieron ese stock.`);
+    }
+    return { ...record, quantity, updatedAt: new Date().toISOString() };
+  });
+
+  const affectedModules = [...new Set(records
+    .filter((record) => removeIds.has(record.id))
+    .map((record) => record.module))];
+  return { records: adjusted, removedCount: removeIds.size, affectedModules };
+}
+
+function recordDirection(direction) {
+  return direction === "Entrada" ? 1 : direction === "Salida" ? -1 : 0;
+}
+
+export async function previewModuleDataDeletion(moduleId, recordId) {
+  const records = await getRecords();
+  return buildModuleDeletionPlan(records, moduleId, recordId);
+}
+
+export async function deleteModuleData(moduleId, recordId) {
+  const plan = await previewModuleDataDeletion(moduleId, recordId);
+  if (!plan.removedCount) return plan;
+  const settings = await getSettings();
+  await replaceCompanyData(plan.records, settings);
+  await snapshotCompany();
+  return plan;
+}
+
 export async function getSetting(key) {
   const companyId = requireCompany();
   const { data, error } = await getSupabase().from("business_settings")
